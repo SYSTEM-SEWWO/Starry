@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+.venv-build/
+.venv-cli/
+venv/
+
+# 打包产物
+*.spec.bak
+星语Starry
+星语Starry.exe
+
+# 运行时数据（本地配置与缓存，不入库）
+config.json
+memory.json
+*.log
+sessions.json
+gateway_stats.json
+.starry/
+browser/
+
+# 密钥 / 环境变量（绝不入库）
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+credentials.json
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 代理 / 开发工具数据（非源码，不入库）
+.codebuddy/
+.vscode/
+.idea/
+
+# BeeWare / Briefcase 构建产物（安卓 APK 工程）
+android/.briefcase/
+android/.gradle/
+android/build/
+android/bin/
+android/logs/
+# 签名密钥库（含私钥，切勿提交；CI 用 secret，本地用脚本生成的演示密钥）
+android/starry-release.keystore
+android/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 版本化 EXE 产物（经 GitHub Releases 发布，不入库）
+星语Starry-GUI-*.exe
+*.exe.sha256
+
+# 历史版本源码快照（体积大，与主分支内容重复）
+releases/

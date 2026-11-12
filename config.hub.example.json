@@ -1,0 +1,17 @@
+{
+  "hub": {
+    "enabled": true,
+    "sources": ["claude-code", "github", "workbuddy", "deepseek", "starry"],
+    "extra_dirs": [],
+    "max_depth": 4,
+    "deepseek": {
+      "enabled": true,
+      "dirs": [],
+      "files": [],
+      "prompts": [],
+      "model": ""
+    },
+    "allow_import": true,
+    "remote_manifest": ""
+  }
+}

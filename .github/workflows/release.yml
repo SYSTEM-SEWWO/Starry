@@ -1,0 +1,264 @@
+# 星语 Starry · 统一发版编排（v12.0 新增）
+#
+# 目标：让发版「像 GitHub 提交项目与 GitHub Releases 一样好用」。
+#   push tag vX.Y.Z → 版本一致性门禁 → 全量自测 →
+#   生成「一个完整自包含版本文件夹 + 同名 zip + 校验和 + RELEASES 索引」→
+#   发布到 GitHub Releases（body 直接取该版 RELEASE_NOTES.md）。
+#
+# 与 build-android.yml / build-windows.yml 的关系：
+#   三者用同一个 concurrency group 串行化；那两个 workflow 只「追加二进制
+#   资产」（append_body: true），本流程负责创建 Release 正文与完整源码快照。
+name: Release Snapshot
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带 v，例如 13.6.1）"
+        required: true
+        default: "13.6.4"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1) 门禁：版本单一真源 + 三端同源 + 全量测试
+  # ------------------------------------------------------------------
+  verify:
+    name: 版本门禁与全量自测
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 解析并校验 tag / 版本号
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME#v}"
+          fi
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag 不符合 SemVer：v$TAG"; exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "发布版本：$TAG"
+
+      - name: 安装依赖（全部钉版本）
+        run: |
+          python -m pip install --upgrade pip
+          pip install "requests==2.32.3" "markdown==3.7" \
+                      "beautifulsoup4==4.12.3" "pypdf==5.1.0" \
+                      "PyQt5==5.15.11" "pynput==1.7.7" "playwright==1.49.1"
+          playwright install chromium
+
+      - name: 版本一致性 + 三端同源 + 语法门禁
+        run: python scripts/check_core_parity.py --expect-version "${{ steps.ver.outputs.version }}"
+
+      - name: 桌面全量自测（offscreen）
+        run: QT_QPA_PLATFORM=offscreen python selftest.py
+
+      - name: Android 真实核心集成回归（v12.0）
+        run: python tests/test_android_v12.py
+
+      - name: Android 历史逻辑回归
+        run: python android/test_app_logic.py
+
+      - name: v12.0 新功能单测
+        run: python tests/test_v12_features.py
+
+      - name: v13.0 新功能单测（整体项目 / 多线并行 / 更新清单）
+        run: python tests/test_v13_features.py
+
+      - name: v13.1 Skills Hub 单测（多生态兼容 / 更新判定 / 接入门禁）
+        run: python tests/test_v13_1_hub.py
+
+      - name: v13.2 DeepSeek 兼容与配置边界单测
+        run: python tests/test_v13_2_hub.py
+
+      - name: v13.2 企业级错误治理单测（401 分类 / 脱敏 / 诊断 / 隔离）
+        run: python tests/test_enterprise_api.py
+
+      - name: 更新清单生成器自测（真实哈希 + 清单校验）
+        env:
+          STARRY_REL_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python - <<'PY'
+          import json, os, tempfile
+          from core import updatecheck as uc
+          v = os.environ["STARRY_REL_VERSION"]
+          d = tempfile.mkdtemp()
+          p = os.path.join(d, "星语Starry-CLI-v%s.exe" % v)
+          open(p, "wb").write(b"starry-v13-binary")
+          import subprocess, sys
+          out = os.path.join(d, "update.json")
+          subprocess.run([sys.executable, "scripts/gen_update_manifest.py",
+                          "--version", v, "--assets-dir", d,
+                          "--repo", "example/starry", "--out", out,
+                          "--online"], check=True)
+          m = json.load(open(out, encoding="utf-8"))
+          ok, reason = uc.validate_manifest(m)
+          print("manifest:", ok, reason)
+          assert ok and uc.check_update("12.0.0", m, "windows")["update_available"]
+          PY
+
+  # ------------------------------------------------------------------
+  # 2) 快照：一个版本 = 一个完整文件夹 + 同名 zip
+  # ------------------------------------------------------------------
+  snapshot:
+    name: 生成完整版本文件夹与 zip
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 生成自包含快照
+        run: |
+          python scripts/make_release.py \
+            --version "${{ needs.verify.outputs.version }}" \
+            --summary "v${{ needs.verify.outputs.version }} 大版本更新（Skills Hub / GUI EXE / 整体项目 / 多线并行 / 自动更新 / Windows EXE / Linux deb）"
+
+      - name: 校验快照完整性（主文件 + 全部 md + 源码）
+        run: |
+          D="releases/星语Starry-v${{ needs.verify.outputs.version }}"
+          for f in main.py starry_cli.py README.md CHANGELOG.md \
+                   RELEASE_NOTES.md MANIFEST.md checksums.txt selftest.py; do
+            test -f "$D/$f" || { echo "::error::缺少 $f"; exit 1; }
+          done
+          test -d "$D/core" && test -d "$D/ui" && test -d "$D/android" \
+            && test -d "$D/docs" && test -d "$D/.github" \
+            && test -d "$D/skills" || exit 1
+          test -f "$D/core/hub.py" && test -f "$D/ui/hub_dialog.py" || exit 1
+          echo "SNAPSHOT_OK: $(find "$D" -type f | wc -l) 个文件"
+
+      - name: 发布快照终验（zip / 校验和 / 索引 / 非占位发布说明）
+        run: python scripts/verify_release.py --version "${{ needs.verify.outputs.version }}" --skip-history
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-snapshot-${{ needs.verify.outputs.version }}
+          path: |
+            releases/*.zip
+            releases/SHA256SUMS-*.txt
+            releases/星语Starry-v${{ needs.verify.outputs.version }}/RELEASE_NOTES.md
+            releases/RELEASES.md
+          if-no-files-found: error
+          retention-days: 90
+
+  # ------------------------------------------------------------------
+  # 2.5) 根目录「后代版本后缀」GUI EXE（v13.4 起固定 CI 步骤）
+  #
+  # 约定：每次更新版本号后，本步骤自动从 core/config.py::APP_VERSION 读版本，
+  # 打包并把 星语Starry-GUI-v<版本>.exe + .sha256 放到仓库根目录，
+  # 再作为 artifact / Release 资产交付。本地等价命令：
+  #     python scripts/build_root_exe.py
+  # ------------------------------------------------------------------
+  root-exe:
+    name: 打包根目录后代版本 GUI EXE
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装打包依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+
+      - name: 生成应用图标
+        run: python scripts/make_icon.py
+
+      - name: 打包并放到仓库根目录（版本后缀自动取自 APP_VERSION）
+        run: python scripts/build_root_exe.py
+
+      - name: 校验产物命名与 SHA-256
+        shell: bash
+        run: |
+          V="${{ needs.verify.outputs.version }}"
+          EXE="星语Starry-GUI-v${V}.exe"
+          test -f "$EXE" || { echo "::error::缺少根目录产物 $EXE"; exit 1; }
+          test -f "$EXE.sha256" || { echo "::error::缺少校验和文件"; exit 1; }
+          REL_VERSION="$V" python -c "import hashlib,os;v=os.environ['REL_VERSION'];p='星语Starry-GUI-v%s.exe'%v;d=hashlib.sha256(open(p,'rb').read()).hexdigest();r=open(p+'.sha256',encoding='utf-8').read().split()[0];assert d==r,(d,r);print('OK',p,round(os.path.getsize(p)/1048576,1),'MB',d[:16])"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: root-exe-${{ needs.verify.outputs.version }}
+          path: |
+            星语Starry-GUI-v${{ needs.verify.outputs.version }}.exe
+            星语Starry-GUI-v${{ needs.verify.outputs.version }}.exe.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  # ------------------------------------------------------------------
+  # 3) 发布：正文取 RELEASE_NOTES，资产为完整 zip + 校验和 + 根目录 EXE
+  # ------------------------------------------------------------------
+  publish:
+    name: 发布到 GitHub Releases
+    needs: [verify, snapshot, root-exe]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-snapshot-${{ needs.verify.outputs.version }}
+          path: release-assets
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: root-exe-${{ needs.verify.outputs.version }}
+          path: root-exe-assets
+
+      - name: 发布 Release（完整 zip + 校验和 + 根目录后代版本 EXE）
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*.zip
+            release-assets/SHA256SUMS-*.txt
+            root-exe-assets/*.exe
+            root-exe-assets/*.exe.sha256
+          body_path: release-assets/RELEASE_NOTES.md
+          append_body: true
+          fail_on_unmatched_files: true
+
+      - name: 回写 RELEASES.md 索引到主分支
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp release-assets/RELEASES.md RELEASES.md
+          git add RELEASES.md releases/RELEASES.md 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: release index v${{ needs.verify.outputs.version }} [skip ci]"
+            git push origin HEAD:main || echo "索引回写跳过（无写权限或非 main）"
+          fi

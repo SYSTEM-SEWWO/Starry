@@ -1,0 +1,63 @@
+name: 缺陷报告 / Bug report
+description: 报告一个缺陷（请先搜索已有 issue，避免重复）
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请确认：
+        1. 已在 [Issues](?tab=issues) 搜索过同类问题；
+        2. 附带 `selftest.py` 自测结果（`QT_QPA_PLATFORM=offscreen python selftest.py`）更有助于定位。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 设置 → 关于 中看到的版本号（或 CHANGELOG 最新条目）
+      placeholder: "v7.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 10/11
+        - macOS（Intel）
+        - macOS（Apple Silicon）
+        - Linux（X11）
+        - Linux（Wayland）
+    validations:
+      required: true
+  - type: dropdown
+    id: run_mode
+    attributes:
+      label: 运行方式
+      options:
+        - 源码运行（启动.sh / 启动.bat）
+        - 手动 python main.py
+        - 打包版（安装包）
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 发生了什么？期望的行为是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开设置 → 网页接入
+        2. 切换到智谱清言网页版
+        3. 提问……
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误信息 / 日志
+      description: 如有报错弹窗或终端输出，请粘贴（注意遮盖 API Key）
+      render: shell

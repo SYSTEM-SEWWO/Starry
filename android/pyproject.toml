@@ -1,0 +1,83 @@
+# 星语 Starry · Android 版（BeeWare / Briefcase 工程配置）
+#
+# 复用桌面版纯 Python 核心（core/），仅 UI 层用 Toga 重写为 Android 原生控件。
+# 构建链路：Briefcase → Gradle → Chaquopy（CPython 运行时）→ 签名 APK。
+#
+# 本地构建：
+#   export ANDROID_HOME=/opt/android-sdk
+#   export JAVA_HOME=<JDK17>
+#   briefcase create android
+#   briefcase build  android
+#   briefcase package android        # 产出 bin/星语Starry-*-release-unsigned.apk
+#
+# CI 构建（GitHub Actions，见 .github/workflows/build-android.yml）：
+#   git tag v13.1.0 && git push --tags   →  自动产出签名 APK 并发布到 Releases。
+
+[project]
+name = "starryandroid"
+version = "13.6.4"
+description = "星语 Starry 安卓版 —— 跨平台 AI 助手（深度思考 / 长期记忆 / 智能体）"
+readme = "README.md"
+requires-python = ">= 3.11"
+authors = [{ name = "星语 Starry" }]
+
+[project.optional-dependencies]
+# 开发态仍可装 toga 元包；**打包态绝不装**，见下方 requires 说明
+dev = ["briefcase==0.4.7", "toga-core==0.5.7"]
+
+[tool.briefcase]
+project_name = "StarryAssistant"
+bundle = "com.starry"
+version = "13.6.4"
+url = "https://github.com/yourname/ai-assistant"
+author = "星语 Starry"
+email = "starry@example.com"
+license = "MIT"
+
+[tool.briefcase.app.starryandroid]
+formal_name = "星语 Starry"
+description = "跨平台 AI 助手：深度思考可视化 / 长期记忆 / 智能体工具"
+sources = ["starryandroid", "core"]
+
+# ===========================================================================
+# v12.0 构建链修复（实证）：v11.5 的通用 requires 里写了裸 "toga"，
+# Chaquopy 在 Android 上 sys.platform=="linux"，pip 把它解析成了 **toga 0.2.15**
+# 元包，并按其 METADATA 的 `toga-gtk; sys_platform=="linux"` 连带装入了
+# toga_gtk 0.2.15。解包 v11.5 的 requirements-common.imy 实测同时存在：
+#     toga-0.2.15.dist-info / toga_gtk-0.2.15.dist-info / toga_gtk/
+#     toga_core-0.5.7.dist-info / toga_android-0.5.7.dist-info
+# 即「0.2.x 元包 + 0.5.x 内核」两代混装。旧的 toga-gtk 代码与 0.5.7 内核
+# API 完全不兼容，是启动期 Toga 后端发现的高危变量。
+# 修复：不再声明 toga 元包，直接钉死 toga-core==0.5.7；所有依赖一律 == 锁版本，
+# 保证每次打包出的 requirements-common.imy 可复现。
+# 校验：构建后运行 scripts/verify_apk.py --apk <path> 会拒绝任何版本混装。
+# ===========================================================================
+requires = [
+    "toga-core==0.5.7",
+    "requests==2.32.3",
+    "markdown==3.7",
+    "beautifulsoup4==4.12.3",
+]
+
+# ---- Android 平台 ----
+[tool.briefcase.app.starryandroid.android]
+requires = [
+    # 与 toga-core 严格同版本；toga-android 通过 entry_points 注册后端
+    # （实测 v11.5 APK 内唯一 [toga.backends] 项为 android = toga_android）
+    "toga-android==0.5.7",
+]
+# INTERNET 用于大模型 API；ACCESS_NETWORK_STATE 让离线时给出明确提示而非超时
+permissions = ["INTERNET", "ACCESS_NETWORK_STATE"]
+api_version = "34"
+
+# ---- Linux 桌面（开发 / 本地预览，非分发形态）----
+[tool.briefcase.app.starryandroid.linux]
+requires = ["toga-gtk==0.5.7"]
+
+# ---- macOS 桌面（开发预览）----
+[tool.briefcase.app.starryandroid.macOS]
+requires = ["toga-cocoa==0.5.7"]
+
+# ---- Windows 桌面（开发预览）----
+[tool.briefcase.app.starryandroid.windows]
+requires = ["toga-winforms==0.5.7"]

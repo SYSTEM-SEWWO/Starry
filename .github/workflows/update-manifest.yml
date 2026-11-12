@@ -1,0 +1,101 @@
+# 星语 Starry · 自动生成 update.json 更新清单（v13.0 新增）
+#
+# 为什么单独一个 workflow：Release 资产由 release.yml / build-windows.yml /
+# build-android.yml 三个流程异步追加，任何一个流程内部都无法保证「看到全部
+# 资产」。因此改为监听 Release published（或手动指定 tag），把当时已发布的
+# 资产全部下载下来，从**真实字节**计算 SHA-256 再回传清单。
+#
+# 幂等：重复运行会 --clobber 覆盖 update.json；APK 晚到时再跑一次即可补齐。
+# 诚实：找不到任何平台资产就失败，绝不生成空清单或编造哈希。
+name: Update Manifest
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag（如 v13.1.0）"
+        required: true
+        default: "v13.1.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-manifest-${{ github.event.release.tag_name || github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    name: 生成并回传 update.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 解析 tag / 版本号
+        id: ver
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          TAG="${RELEASE_TAG:-$INPUT_TAG}"
+          if [ -z "$TAG" ]; then TAG="$GITHUB_REF_NAME"; fi
+          VER="${TAG#v}"
+          if ! [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag 不符合 SemVer：$TAG"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "目标 Release：$TAG（版本 $VER）"
+
+      - name: 下载该 Release 的全部已发布资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ steps.ver.outputs.tag }}" \
+            --dir release-assets --clobber
+          echo "已下载资产："
+          ls -lh release-assets
+
+      - name: 生成 update.json（真实哈希 + 真实仓库 URL）
+        run: |
+          python scripts/gen_update_manifest.py \
+            --version "${{ steps.ver.outputs.version }}" \
+            --assets-dir release-assets \
+            --repo "${{ github.repository }}" \
+            --out update.json \
+            --online \
+            --notes "v${{ steps.ver.outputs.version }} 大版本更新（整体项目 / 多线并行 / 自动更新）"
+
+      - name: 用 core.updatecheck 复核清单可被客户端接受
+        run: |
+          python - <<'PY'
+          import json
+          from core import updatecheck as uc
+          m = json.load(open("update.json", encoding="utf-8"))
+          ok, reason = uc.validate_manifest(m)
+          print("validate_manifest:", ok, reason)
+          assert ok, reason
+          r = uc.check_update("0.0.1", m, "windows")
+          print("check_update/windows:", r["update_available"], r["reason"])
+          assert r["update_available"], r["reason"]
+          PY
+
+      - name: 回传 update.json 到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.ver.outputs.tag }}" update.json --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-json-${{ steps.ver.outputs.version }}
+          path: update.json
+          if-no-files-found: error
+          retention-days: 90

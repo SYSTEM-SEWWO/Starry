@@ -1,0 +1,31 @@
+=== APK 鉴定：C:/Users/HP/WorkBuddy/hxw/_starry_src/星语Starry-v11.5/android/dist/星语 Starry-11.5.0.apk（51980670 字节）===
+PASS  包含 AndroidManifest.xml                 
+PASS  包含 resources.arsc                      
+PASS  包含 classes.dex                         
+PASS  包含 classes.dex 且非空                     
+PASS  v1 (JAR) 签名                            SF=1 RSA/DSA=1
+PASS  v2/v3 (APK Signing Block) 签名           偏移 51945456
+PASS  APK Signing Block 长度自洽                 head=4088 tail=4088 start=51941376
+PASS  包含 app.imy                             
+PASS  包含 build.json                          
+PASS  包含 requirements-common.imy             
+PASS  包含 stdlib-common.imy                   
+PASS  包含 cacert.pem                          
+PASS  含 CPython 3.11 原生库                     3 个 ABI
+PASS  build.json 中 app.imy 的 SHA1 匹配         记录=4b632f61db4b 实际=4b632f61db4b
+PASS  build.json Python 版本为 3.11             3.11
+PASS  app.imy 含 starryandroid/app.pyc        
+PASS  app.imy 含 core 包                       43 个模块
+WARN  app.imy 含 v12 星尘模块 core/stardust.pyc   （v11.5 包不含，属预期差异）
+PASS  pyc magic 对应 CPython 3.11              3.11
+     toga 系依赖：{"toga": "0.2.15", "toga-android": "0.5.7", "toga-core": "0.5.7", "toga-gtk": "0.2.15"}
+FAIL  toga 元包与 toga-core 主版本一致（无 0.2/0.5 混装） toga=0.2.15, toga-core=0.5.7
+WARN  未混入 toga_gtk 旧后端                       {'toga-gtk': '0.2.15'}
+PASS  存在 Android 后端注册                        ['android']
+PASS  APK 内应用版本 = 11.5.0                     实测 {'11.5.0'}
+PASS  声明 INTERNET 权限                         （AXML UTF-16LE 字符串探测，非完整解析）
+
+==== 鉴定汇总：21 项通过 / 1 项失败 / 2 项提示 ====
+  FAIL toga 元包与 toga-core 主版本一致（无 0.2/0.5 混装） toga=0.2.15, toga-core=0.5.7
+  WARN app.imy 含 v12 星尘模块 core/stardust.pyc （v11.5 包不含，属预期差异）
+  WARN 未混入 toga_gtk 旧后端 {'toga-gtk': '0.2.15'}

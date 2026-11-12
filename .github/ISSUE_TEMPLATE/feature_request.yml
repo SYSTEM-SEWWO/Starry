@@ -1,0 +1,35 @@
+name: 功能建议 / Feature request
+description: 提一个新功能或改进建议
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提议！请先搜索已有建议。与项目方向相关的提议更容易被采纳：
+        本地优先 · 隐私优先 · 网页版 harness · 网关运维 · 视觉动效。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 这个功能背后的使用场景/痛点是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的方案
+      description: 你期望的交互/行为是怎样的？有无参考产品？
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关模块
+      options:
+        - 网页版接入（浏览器 harness）
+        - 网关仪表盘
+        - 智能体 / 插件
+        - 本地模型（Ollama/LM Studio/魔塔）
+        - UI / 动效
+        - 打包 / 安装
+        - 其他

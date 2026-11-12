@@ -1,0 +1,22 @@
+{
+  "provider": "zhipu",
+  "api_keys": {
+    "zhipu": "在这里填入智谱 API Key"
+  },
+  "models": {
+    "zhipu": "glm-4-flash"
+  },
+  "temperature": 0.7,
+  "max_tokens": 4096,
+  "system_prompt": "你是一个友善、聪明、干练的桌面 AI 助手，请用简洁清晰的中文回答。",
+  "stream": true,
+  "history_limit": 20,
+  "deep_thinking": false,
+  "auto_refresh_models": true,
+  "appearance": {
+    "always_on_top": true,
+    "theme": "dark",
+    "font_size": 14,
+    "ball_size": 56
+  }
+}

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek 模拟页（fixture）</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  #login-btn { padding: 8px 16px; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #ccc; }
+  #chat-input { width: 420px; height: 60px; display: block; margin: 12px 0; }
+  #send, #stop { padding: 8px 16px; margin-right: 8px; cursor: pointer; }
+  .ds-message--assistant { border: 1px solid #ddd; padding: 12px; margin: 10px 0;
+      border-radius: 8px; }
+  .ds-markdown { white-space: pre-wrap; }
+  .ds-think-content { color: #888; font-size: 12px; margin-bottom: 6px; }
+  #newchat { color: #06c; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div>
+    <button id="login-btn">登录</button>
+    <img class="avatar" style="display:none" alt="avatar">
+    <span id="newchat">开启新对话</span>
+  </div>
+  <textarea id="chat-input" placeholder="输入问题…"></textarea>
+  <div>
+    <span id="send" role="button" aria-label="发送">发送</span>
+    <span id="stop" role="button" aria-label="停止生成" style="display:none">停止</span>
+  </div>
+  <div id="answers"></div>
+</div>
+<script>
+(function () {
+  var logged = localStorage.getItem("fixture_logged_in") === "1";
+  var loginBtn = document.getElementById("login-btn");
+  var avatar = document.querySelector(".avatar");
+  function refreshAuth() {
+    logged = localStorage.getItem("fixture_logged_in") === "1";
+    loginBtn.style.display = logged ? "none" : "inline-block";
+    avatar.style.display = logged ? "inline-block" : "none";
+  }
+  refreshAuth();
+  loginBtn.onclick = function () {
+    localStorage.setItem("fixture_logged_in", "1");
+    refreshAuth();
+  };
+  document.getElementById("newchat").onclick = function () {
+    document.getElementById("answers").innerHTML = "";
+  };
+  var input = document.getElementById("chat-input");
+  var send = document.getElementById("send");
+  var stop = document.getElementById("stop");
+  var answers = document.getElementById("answers");
+  var timer = null;
+  function stopGen() {
+    if (timer) { clearInterval(timer); timer = null; }
+    stop.style.display = "none";
+    send.style.display = "inline-block";
+  }
+  stop.onclick = stopGen;
+  function start() {
+    var q = input.value || "";
+    input.value = "";
+    var block = document.createElement("div");
+    block.className = "ds-message--assistant";
+    var think = document.createElement("div");
+    think.className = "ds-think-content";
+    think.textContent = "（模拟深度思考：正在分析问题「" + q.slice(0, 20) + "」…）";
+    var md = document.createElement("div");
+    md.className = "ds-markdown";
+    block.appendChild(think);
+    block.appendChild(md);
+    answers.appendChild(block);
+    var full = "这是针对「" + q + "」的模拟回答。" +
+      "浏览器 harness 把网页版对话页套上马具之后，" +
+      "回答可以像 API 一样逐字流式返回。" +
+      "第二段：支持思考过程、随时停止、上下文前情提要拼接。" +
+      "第三段：分片下载与 llama.cpp 加载由模型库对话框管理。" +
+      "第四段（结尾标记 END_OF_FIXTURE_ANSWER）。";
+    var i = 0;
+    send.style.display = "none";
+    stop.style.display = "inline-block";
+    timer = setInterval(function () {
+      i = Math.min(full.length, i + 12);
+      md.textContent = full.slice(0, i);
+      if (i >= full.length) { stopGen(); }
+    }, 40);
+  }
+  send.onclick = start;
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); start(); }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: 自测（${{ matrix.os }} · py${{ matrix.python-version }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyflakes
+
+      - name: 静态检查（pyflakes 门禁）
+        run: python -m pyflakes .
+        # pyflakes 无 --count 参数（那是 flake8 的），全绿即退出码 0
+
+      - name: 全量自测（offscreen，无需显示器）
+        run: QT_QPA_PLATFORM=offscreen python selftest.py
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: v12.0 / v13.0 / v13.1 / v13.2 新功能单测（纯逻辑，离线可跑）
+        run: |
+          python tests/test_v12_features.py
+          python tests/test_v13_features.py
+          python tests/test_v13_1_hub.py
+          python tests/test_v13_2_hub.py
+          python tests/test_enterprise_api.py
+
+      - name: 版本单一真源 + 三端同源 + 全量 AST 门禁
+        run: python scripts/check_core_parity.py
+
+      - name: 根目录后代版本 EXE 命名约定自检（v13.4 CI 步骤）
+        run: python -c "import sys; sys.path.insert(0,'scripts'); import build_root_exe as b; v=b.read_version(); assert v.count('.')==2, v; print('ROOT_EXE:', b.EXE_PREFIX + '-v' + v + '.exe')"
+
+  build-deb:
+    name: Linux / UOS 电脑版 deb 构建验证
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 真实构造 .deb（纯标准库 ar + tar.gz）
+        run: python scripts/build_deb.py
+
+      - name: 结构自检（ar 成员 / control / data / 启动器）
+        run: |
+          python - <<'PY'
+          import glob, io, tarfile
+          from core.config import APP_VERSION
+          deb = sorted(glob.glob("dist/*.deb"))[-1]
+          data = open(deb, "rb").read()
+          assert data.startswith(b"!<arch>\n"), "ar 魔数错误"
+          pos, members = 8, {}
+          while pos < len(data):
+              head = data[pos:pos+60]
+              if len(head) < 60: break
+              name = head[:16].decode("ascii").strip()
+              size = int(head[48:58].decode("ascii").strip())
+              members[name] = data[pos+60:pos+60+size]
+              pos += 60 + size + (size % 2)
+          for n in ("debian-binary", "control.tar.gz", "data.tar.gz"):
+              assert n in members, "缺少 " + n
+          with tarfile.open(fileobj=io.BytesIO(members["control.tar.gz"]), mode="r:gz") as tf:
+              ctrl = tf.extractfile("./control").read().decode("utf-8")
+              assert ("Version: " + APP_VERSION) in ctrl, ctrl
+          with tarfile.open(fileobj=io.BytesIO(members["data.tar.gz"]), mode="r:gz") as tf:
+              names = tf.getnames()
+              assert "./usr/bin/starry" in names, "缺启动器"
+              for mod in ("project.py", "parallel.py", "updatecheck.py"):
+                  assert any(n.endswith("/core/" + mod) for n in names), "缺 " + mod
+          print("DEB_OK: %d 字节 / %d 个 data 文件" % (len(data), len(names)))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starry-linux-deb
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-e2e:
+    name: 网页版端到端（真实验证器 + Chromium）
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖 + Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright
+          python -m playwright install chromium --with-deps
+
+      - name: 浏览器 harness 端到端（12 项）
+        run: QT_QPA_PLATFORM=offscreen python verify_v6_browser.py
+        env:
+          QT_QPA_PLATFORM: offscreen
+        # 注：真实 X11（Xvfb）冒烟为本地实践，见 README「自测」节；
+        # CI 环境无通知区域，托盘相关分支在 offscreen 下已由自测覆盖。
+
+  build-windows:
+    name: Windows 打包（单文件 exe）
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # 复用 scripts/build_windows.ps1（本地与 CI 同一命令，幂等）：
+      # venv → 依赖（含可选依赖，exe 开箱即用 TTS/热键/网页版 driver）
+      # → 生成图标 → PyInstaller 单文件打包 → 整理 dist\
+      - name: 一键打包（build_windows.ps1）
+        run: powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+
+      # 冒烟：单文件 exe 首次启动需解压 10-30s；崩溃的典型特征是
+      # 秒退且退出码非 0。8s 后进程存活或干净退出均视为启动阶段通过。
+      - name: 冒烟：exe 可启动
+        run: |
+          $exe = "dist\星语Starry-Windows\星语Starry.exe"
+          if (-not (Test-Path $exe)) { throw "exe 不存在: $exe" }
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          $alive = -not $p.HasExited
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          if ($p.HasExited -and $p.ExitCode -ne 0) {
+            throw "exe 启动即崩溃，退出码 $($p.ExitCode)"
+          }
+          Write-Host "exe 冒烟通过（8s 后存活=$alive）"
+
+      - name: 上传产物（Actions Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: starry-windows-exe
+          path: |
+            dist\星语Starry-Windows\星语Starry.exe
+            dist\星语Starry-Windows\README.md
+            dist\星语Starry-Windows\requirements-optional.txt
+          if-no-files-found: error
+          retention-days: 14
+        # macOS / Linux 打包仍走本地脚本（macOS 需 codesign 配置，
+        # Linux 产物非 exe），见 README「快速开始」构建方式表。

@@ -1,0 +1,15 @@
+# 可选依赖（装不装都不影响主程序运行，装了就多对应功能）
+#
+# 语音朗读（TTS）：安装后回复气泡出现「🔊 朗读」按钮
+#   Linux 还需系统引擎：sudo apt install espeak
+pyttsx3>=2.90
+
+# 网页版接入（DeepSeek 网页版 · 浏览器 harness）：安装后设置中出现「网页接入」页
+#   安装后还必须下载浏览器内核：playwright install chromium
+#   也可设置环境变量 STARRY_CHROMIUM 指向系统已安装的 Chrome/Chromium
+playwright>=1.40
+
+# UPX 压缩（打包时缩小体积 30-50%，无 UPX 时 spec 中 upx=True 会自动跳过）
+#   Windows: https://upx.github.io/ 下载后放入 PATH
+#   macOS:   brew install upx
+#   Linux:   sudo apt install upx-ucl

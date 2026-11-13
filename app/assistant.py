@@ -1557,7 +1557,6 @@ class AssistantApp(QObject):
         扫描最近一条 assistant 回复中的 ```html 代码块，落地临时文件后在浏览器打开。
         """
         import os
-        import re
         import tempfile
         import webbrowser
         html = None
@@ -1862,18 +1861,14 @@ class AssistantApp(QObject):
         box.setInformativeText("是否把当前模型切换为推荐模型？")
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         box.setDefaultButton(QMessageBox.No)
-        box.open()
-        box.finished.connect(lambda r, b=box: self._on_confirm_result(r, b))
-        return
-
-    def _on_confirm_result(self, result, box):
-        if box.standardButton(box.clickedButton()) == QMessageBox.Yes:
-            self.cfg.set_model(route["model"])
-            try:
-                self.models.reload_combo()
-            except Exception:                           # noqa: BLE001
-                pass
-            self.window.show_hint("🧠 已切换到：%s" % route["model"])
+        if box.exec_() != QMessageBox.Yes:
+            return
+        self.cfg.set_model(route["model"])
+        try:
+            self.models.reload_combo()
+        except Exception:                               # noqa: BLE001
+            pass
+        self.window.show_hint("🧠 已切换到：%s" % route["model"])
 
     def toggle_auto_route(self):
         """开关「每轮自动按请求特征选模型」（默认关闭）。"""

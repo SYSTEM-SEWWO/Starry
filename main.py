@@ -115,7 +115,7 @@ def _selftest(out_path=""):
         ck("core.hub 可用：%r" % (exc,), False)
 
     # offscreen 由环境变量 QT_QPA_PLATFORM=offscreen 控制；有显示器时也能跑。
-    qt = QApplication.instance() or QApplication(sys.argv[:1])
+    _ = QApplication.instance() or QApplication(sys.argv[:1])
     try:
         from ui.hub_dialog import offscreen_check
         for name, ok in offscreen_check():

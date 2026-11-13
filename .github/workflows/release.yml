@@ -246,6 +246,10 @@ jobs:
           print("DEB_OK", p, os.path.getsize(p))
           PY
 
+      - name: 校验和改名（避免与 snapshot job 同名资产冲突）
+        run: |
+          mv releases/SHA256SUMS-${{ needs.verify.outputs.version }}.txt releases/SHA256SUMS-multiplatform-${{ needs.verify.outputs.version }}.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: multiplatform-${{ needs.verify.outputs.version }}
@@ -253,7 +257,7 @@ jobs:
             releases/*.tar.gz
             releases/*.zip
             releases/*.deb
-            releases/SHA256SUMS-*.txt
+            releases/SHA256SUMS-multiplatform-*.txt
           if-no-files-found: error
           retention-days: 90
 
@@ -294,7 +298,7 @@ jobs:
             multiplatform-assets/*.tar.gz
             multiplatform-assets/*.zip
             multiplatform-assets/*.deb
-            multiplatform-assets/SHA256SUMS-*.txt
+            multiplatform-assets/SHA256SUMS-multiplatform-*.txt
           body_path: release-assets/RELEASE_NOTES.md
           append_body: true
           fail_on_unmatched_files: true

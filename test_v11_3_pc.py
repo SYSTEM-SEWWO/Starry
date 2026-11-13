@@ -2,13 +2,11 @@
 """V11.3 电脑端新功能测试：消息收藏 / AI 摘要 / 批量导出。"""
 import os
 import sys
-import json
 import tempfile
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import core.sessions as sessions
 from core.sessions import SessionStore, build_summary_prompt
 from core import exporter
 

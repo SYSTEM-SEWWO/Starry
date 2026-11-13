@@ -9,7 +9,6 @@ iter_lines(decode_unicode=True) 据此解码 UTF-8 字节 → 中文变成 ä½ 
 import os
 import sys
 import json
-import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

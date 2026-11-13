@@ -4,8 +4,6 @@
 全部针对 core.insights 纯函数与 core.sessions 的薄层状态方法，
 零 Qt、零网络，可离线运行。
 """
-import pytest
-
 from core import insights as I
 from core.sessions import SessionStore
 

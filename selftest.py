@@ -1716,7 +1716,6 @@ def test_panel():
 
 def test_mail():
     section("24. Agent Mail（邮件智能体 · 本地优先 IMAP 摘要）")
-    import core.mail as mail_mod
     from core.mail import (MailClient, parse_message, summarize_messages,
                            draft_reply)
     from ui.mail_dialog import MailDialog
@@ -3217,7 +3216,6 @@ def test_v75_security(app):
 
     import os
     import stat
-    import tempfile
     from core import config as cc
     from core import mcp as mcp_mod
 
@@ -3299,7 +3297,6 @@ def test_v75_security(app):
     mgr3.unregister_all()
 
     # 列表式 Popen（非 shell）→ 无命令注入面：参数含特殊字符也安全
-    import subprocess
     check("MCP 使用非 shell 子进程启动",
           "shell" not in repr(mcp_mod.subprocess.Popen.__call__) or True)
 
@@ -4831,7 +4828,7 @@ def test_v1361_lmstudio_usable():
     """V13.6.1：默认 lmstudio 且开箱可用（用户明确要求）。"""
     section("V13.6.1 · lmstudio 默认且开箱可用")
     from PyQt5.QtWidgets import QMessageBox as _QMB
-    from core.config import AppConfig, PROVIDERS
+    from core.config import AppConfig
     import ui.settings_dialog as sd
 
     # ---- A. 全局默认 provider = lmstudio ----

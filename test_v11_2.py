@@ -13,9 +13,9 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.sessions import SessionStore, _normalize_tags
-from core.exporter import (conversation_to_markdown, conversation_to_html,
-                           conversation_to_pdf, available_formats)
+from core.sessions import SessionStore
+from core.exporter import (conversation_to_html, conversation_to_pdf,
+                           available_formats)
 
 
 def _new_store():

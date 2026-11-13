@@ -366,7 +366,7 @@ class StarryApp(toga.App):
             try:
                 client = build_client(self.cfg)
             except Exception as exc:                     # noqa: BLE001
-                self._ui(lambda: self._append_error("配置错误：%s" % exc))
+                self._ui(lambda e=exc: self._append_error("配置错误：%s" % e))
                 return
             try:
                 messages = _build_messages(self.cfg, prompt, use_memory=True)
@@ -384,10 +384,10 @@ class StarryApp(toga.App):
                     self._run_chat(client, messages, reasoning_buf, answer_buf)
             except Exception as exc:                     # noqa: BLE001
                 self._log_crash("do_turn_stream", exc)
-                self._ui(lambda: self._append_error("出错了：%s" % exc))
+                self._ui(lambda e=exc: self._append_error("出错了：%s" % e))
         except Exception as exc:                         # noqa: BLE001
             self._log_crash("do_turn", exc)
-            self._ui(lambda: self._append_error("未预期错误：%s" % exc))
+            self._ui(lambda e=exc: self._append_error("未预期错误：%s" % e))
         finally:
             final_answer = "".join(answer_buf).strip()
             self._ui(lambda: self._commit_answer(

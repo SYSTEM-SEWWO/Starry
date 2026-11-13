@@ -28,6 +28,14 @@
 | **兼容范围 / 配置项 / 异常边界** | [Hub 兼容契约](docs/HUB兼容范围与配置_v13_2.md) |
 | **401 排查 / 企业部署** | [企业级运维与故障排查](docs/企业级运维与故障排查_v13_2.md) |
 | **提交到 GitHub / 发布 Release** | [GitHub 提交与 Release 发布流程](docs/GitHub_提交与Release发布流程.md)；一键脚本 `scripts/git_push.sh` / `scripts/github_release.sh` |
+| **多平台 Release 资产** | [v13.7.0 Release](https://github.com/SYSTEM-SEWWO/Starry/releases/tag/v13.7.0)：Windows GUI EXE / Debian `.deb` / macOS / Linux / Android-Termux 包 + `SHA256SUMS` |
+
+> **资产名说明**：GitHub 会剥离资产名中的非 ASCII 前缀，所以 Release 上显示
+> `Starry-*`；仓库 `releases/` 目录内为带「星语」前缀的同一文件，内容完全一致。
+> macOS / Linux / Android 包是**真实可运行的源码分发包**（含完整源码与一键启动
+> 脚本）；原生 `.app`/`.dmg`、ELF、APK 需在对应系统执行
+> `scripts/build_macos.sh` / `build_linux.sh` / `build_android.sh apk` 构建。
+> 本地一键生成：`python scripts/build_release_assets.py`。
 
 ## 🚀 如何使用（v13.7.0）
 

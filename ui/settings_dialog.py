@@ -63,6 +63,8 @@ class SettingsDialog(QDialog):
     cache_clean_requested = pyqtSignal()     # v13.5：打开缓存清理窗口
     devtools_requested = pyqtSignal()        # v13.5：打开开发者调试面板
     auto_scale_requested = pyqtSignal()      # v13.5：立即按屏幕自动适配缩放
+    density_requested = pyqtSignal(str)      # v13.6.5：即时切换栏目密度
+    layout_reset_requested = pyqtSignal()    # v13.6.5：一键恢复推荐布局
     web_switch_requested = pyqtSignal(str)   # v7：切换到指定网页站点
     gateway_requested = pyqtSignal()         # v6：打开网关仪表盘
 
@@ -299,6 +301,18 @@ class SettingsDialog(QDialog):
         for label in FONT_SCALE_LABELS:
             self.scale_combo.addItem(label)
         form2.addRow("界面缩放", self.scale_combo)
+
+        from core import uilayout
+        self.density_combo = QComboBox()
+        for label in uilayout.DENSITY_LABELS:
+            self.density_combo.addItem(label)
+        self.density_combo.setToolTip(
+            "上下栏目的间距与尺寸：宽松（默认）/ 超宽松更舒展，紧凑回归旧版；保存后即时生效")
+        form2.addRow("栏目密度", self.density_combo)
+        self.layout_reset_btn = QPushButton("↺ 恢复推荐布局（放大窗口）")
+        self.layout_reset_btn.setToolTip("重置窗口尺寸与位置为当前密度的推荐值")
+        self.layout_reset_btn.clicked.connect(self.layout_reset_requested.emit)
+        form2.addRow("", self.layout_reset_btn)
 
         self.ball_spin = QSpinBox()
         self.ball_spin.setRange(40, 96)
@@ -672,6 +686,11 @@ class SettingsDialog(QDialog):
         s_idx = self.scale_combo.findText(self.cfg.data.get("font_scale", "标准"))
         if s_idx >= 0:
             self.scale_combo.setCurrentIndex(s_idx)
+        from core import uilayout
+        d_idx = self.density_combo.findText(
+            uilayout.normalize(self.cfg.data.get("ui_density")))
+        if d_idx >= 0:
+            self.density_combo.setCurrentIndex(d_idx)
         self.ball_spin.setValue(int(ap.get("ball_size", 56)))
         self.top_check.setChecked(bool(ap.get("always_on_top", True)))
         from core.hotkey import DEFAULT_HOTKEY
@@ -1462,6 +1481,12 @@ class SettingsDialog(QDialog):
         self.cfg.appearance["ball_size"] = int(self.ball_spin.value())
         self.cfg.appearance["always_on_top"] = bool(self.top_check.isChecked())
         self.cfg.data["font_scale"] = self.scale_combo.currentText()
+        from core import uilayout
+        _new_density = uilayout.normalize(self.density_combo.currentText())
+        if _new_density != uilayout.normalize(self.cfg.data.get("ui_density")):
+            self.density_requested.emit(_new_density)
+        self.cfg.data["ui_density"] = _new_density
+        self.cfg.data["layout_version"] = uilayout.LAYOUT_VERSION
         # v13.5：自动缩放 / 缓存自动清理 / 开发者调试
         self.cfg.data["auto_ui_scale"] = bool(self.auto_scale_check.isChecked())
         self.cfg.data["auto_clean_tmp"] = bool(self.auto_clean_check.isChecked())

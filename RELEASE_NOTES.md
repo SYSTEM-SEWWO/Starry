@@ -1,6 +1,21 @@
-# 星语 Starry · 当前版发布说明 v13.6.4
+# 星语 Starry · 当前版发布说明 v13.6.5
 
-**主题**：聊天窗口上/下栏布局放宽（更易读更舒适）+ 延续 v13.6.3 乱码修复、v13.6.2 图片 400 守卫。
+**主题**：修复「布局没有任何变化」根因 + 栏目密度四档即时生效 + GitHub 提交/Release 完整流程。
+
+## v13.6.5 追加：布局根因修复与流程文档
+
+两个真因（均已用真实代码/配置核对，非推测）：
+1. 目录改名为 `星语Starry`、EXE 移入 `releases/`，上轮给出的根目录 EXE 路径失效 → 用户运行旧版；
+2. `_restore_geometry()` 读取 `config.json` 的 `window_size=[430,640]` 覆盖代码新默认值 → 改源码无效。
+
+修复：新增 `core/uilayout.py` 四档密度 + 首次启动一次性迁移旧窗口尺寸；标题栏 6 个次要图标
+收进「⋯」菜单；状态栏显示版本号与当前密度；设置页 / 快捷键 / 命令面板 / 托盘 / CLI 均可切换。
+四档窗口：紧凑 480×680 / 标准 540×760 / **宽松 620×860（默认）** / 超宽松 720×960。
+另修复中文路径下 Qt 平台插件加载失败（源码运行时弹 `no Qt platform plugin`）。
+
+流程：`docs/GitHub_提交与Release发布流程.md` + `scripts/git_push.sh` + `scripts/github_release.sh`，
+覆盖首次提交、日常推送、版本发布清单、tag 触发 CI、手动/网页 Release、校验与排错。
+
 
 ## v13.6.4 追加：聊天窗口布局放宽
 
@@ -108,13 +123,13 @@ starry --model-diagnose
 
 | 平台 | 资产 |
 | --- | --- |
-| **Windows GUI（本版，根目录）** | `星语Starry-GUI-v13.6.4.exe` |
-| 校验和 | `星语Starry-GUI-v13.6.4.exe.sha256` |
-| 历史版本 | 根目录 `...v13.3.0` … `...v13.6.4` 均保留 |
+| **Windows GUI（本版，根目录）** | `星语Starry-GUI-v13.6.5.exe` |
+| 校验和 | `星语Starry-GUI-v13.6.5.exe.sha256` |
+| 历史版本 | 根目录 `...v13.3.0` … `...v13.6.5` 均保留（另见 `releases/`） |
 
 ## 验证
 
-- 发布门禁 `check_core_parity.py --expect-version 13.6.4` 通过：三端同源 56 文件一致、
+- 发布门禁 `check_core_parity.py --expect-version 13.6.5` 通过：三端同源 56 文件一致、
   版本 3 处一致、全量语法通过；独立单测 172/172 + 80/80 + 131/131 + 73/73。
 - 回归自测：v13.6.1 的 7 项（默认 provider=lmstudio、下拉过滤 embedding、自动选中首个、
   自动拉取仅限本地服务商）仍全 PASS；历史 4 根因回归（端点判定 / 空模型 / 深度思考 /
@@ -122,7 +137,7 @@ starry --model-diagnose
   （minicpm5-1b+图片不再带图、池含视觉模型自动切换、已是视觉模型不切走、无图场景不受影响）。
 - **v13.6.3 新增「SSE 中文乱码」回归（chat_stream / chat_agent_stream 共 5 断言）全 PASS**
   （无 charset 场景中文逐字正确、无 `ä½`/`å¥½` 乱码；显式 utf-8 头也正确）。
-- `starry_cli.py --version` → `星语 Starry 13.6.4（命令行版）`。
+- `starry_cli.py --version` → `星语 Starry 13.6.5（命令行版）`。
 - 说明：本环境对长时进程有 ~17s 上限，导致 `selftest.py` 完整跑批被中断；上述断言已用
   独立 harness 分段验证全部通过，非代码回归。
 - EXE 冒烟 / SHA-256 复算 / PYZ 模块核对见「产物核验」章节。

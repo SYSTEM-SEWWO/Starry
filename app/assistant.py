@@ -276,6 +276,7 @@ class AssistantApp(QObject):
         self.window.speak_requested.connect(self.on_speak)
         self.window.variant_selected.connect(self._on_variant_selected)
         self.window.command_palette_requested.connect(self.open_command_palette)
+        self.window.density_cycle_requested.connect(self._cycle_density)
         self.window.panel_requested.connect(self.open_panel)
         self.window.sessions_requested.connect(self.open_sessions)
         self.window.prompts_requested.connect(self.open_prompts)
@@ -314,6 +315,8 @@ class AssistantApp(QObject):
         menu.addAction("🔊 朗读最后一条回复", self._speak_latest)
         menu.addAction("✨ 命令面板 (Ctrl+K)", self.open_command_palette)
         menu.addAction("🎨 切换主题", self._cycle_theme)
+        menu.addAction("📐 切换栏目密度", self._cycle_density)
+        menu.addAction("↺ 恢复推荐布局", self.window.reset_layout)
         menu.addAction("🛰 网关仪表盘", self.open_gateway)
         menu.addAction("关于 星语", self.open_about)
         menu.addAction("设置", self.open_settings)
@@ -524,6 +527,10 @@ class AssistantApp(QObject):
              "分级日志实时输出 / 环境信息 / 导出（v13.5）", "其他"),
             ("auto_scale", "🔎", "按屏幕自动适配缩放",
              "按 DPI / 分辨率自动设置缩放档与窗口尺寸（v13.5）", "外观"),
+            ("cycle_density", "📐", "切换栏目密度",
+             "紧凑 → 标准 → 宽松 → 超宽松 循环，即时生效（v13.6.5）", "外观"),
+            ("reset_layout", "↺", "恢复推荐布局",
+             "重置窗口尺寸与位置，按当前密度放大（v13.6.5）", "外观"),
             ("models", "📦", "模型库（魔塔 GGUF）", "搜索并下载本地模型", "模型"),
             ("switch_model", "🔀", "切换到下一个模型", "在模型列表中循环切换", "模型"),
             ("model_route", "🧠", "智能选模型",
@@ -625,6 +632,10 @@ class AssistantApp(QObject):
             self.open_devtools()
         elif cid == "auto_scale":
             self.apply_auto_scale()
+        elif cid == "cycle_density":
+            self._cycle_density()
+        elif cid == "reset_layout":
+            self.window.reset_layout()
         elif cid == "models":
             self.open_models()
         elif cid == "switch_model":
@@ -919,6 +930,16 @@ class AssistantApp(QObject):
             self.window.show_hint("模型列表为空，请先在设置中选择服务商")
             return
         combo.setCurrentIndex((combo.currentIndex() + 1) % combo.count())
+
+    def _cycle_density(self):
+        """栏目密度循环切换（命令面板 / 托盘 / Ctrl+Alt+D 共用）"""
+        from core import uilayout
+        labels = list(uilayout.DENSITY_LABELS)
+        cur = uilayout.normalize(self.cfg.data.get("ui_density"))
+        nxt = labels[(labels.index(cur) + 1) % len(labels)]
+        self.window.set_density(nxt)
+        self._applied_snapshot["ui_density"] = nxt
+        self.window.show_hint("栏目密度：%s（Ctrl+Alt+D 可继续切换）" % nxt)
 
     def _cycle_theme(self):
         """四主题循环切换（翠绿 / 天蓝 / 墨夜 / 深蓝）"""
@@ -2522,6 +2543,8 @@ class AssistantApp(QObject):
             self._settings.cache_clean_requested.connect(self.open_cache_clean)
             self._settings.devtools_requested.connect(self.open_devtools)
             self._settings.auto_scale_requested.connect(self.apply_auto_scale)
+            self._settings.density_requested.connect(self.window.set_density)
+            self._settings.layout_reset_requested.connect(self.window.reset_layout)
         if self._settings.exec_() == SettingsDialog.Accepted:
             self._apply_settings()
 
@@ -2589,6 +2612,7 @@ class AssistantApp(QObject):
             "agent_enabled": bool(self.cfg.data.get("agent_enabled", True)),
             "deep_thinking": bool(self.cfg.data.get("deep_thinking", False)),
             "debug_mode": bool(self.cfg.data.get("debug_mode", False)),
+            "ui_density": self.cfg.data.get("ui_density", "宽松"),
             "log_level": self.cfg.data.get("log_level", "INFO"),
             "mcp_count": len(self.cfg.data.get("mcp_servers") or []),
         }
@@ -2608,6 +2632,9 @@ class AssistantApp(QObject):
             self._refresh_open_dialogs_theme(theme, eff_fs)
 
         # 2) 调试日志开关与级别
+        if prev and "ui_density" in changed:
+            self.window._apply_layout(snap["ui_density"])
+
         if not prev or (changed & {"debug_mode", "log_level"}):
             devlog.configure(enabled=snap["debug_mode"],
                              level=snap["log_level"], cfg=self.cfg)

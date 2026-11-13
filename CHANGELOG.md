@@ -1,3 +1,31 @@
+## [13.6.5] - 2026-11-13
+
+### 布局根因修复：栏目密度四档 + 旧配置一次性迁移
+
+用户反馈「布局没有任何改动，再放大一点，还是很紧，太奇怪了」。两个真因：
+1. 项目目录改名 `Starry` → `星语Starry` 且 EXE 移入 `releases/`，上轮给出的 EXE 路径失效，用户运行的仍是旧版；
+2. `ui/chat_window.py::_restore_geometry()` 用 `config.json` 里保存的 `window_size=[430,640]`
+   **覆盖**代码里的新默认值，导致改源码对老用户完全无效。
+
+- 新增 `core/uilayout.py`（三端同源、零 Qt）：紧凑 / 标准 / 宽松 / 超宽松四档全部栏目尺寸；
+  `migrate()` 首次启动一次性把旧窗口抬到 `620×860` 并打版本标记，之后不再覆盖用户手动尺寸。
+- `ui/chat_window.py`：`_apply_layout()` 统一应用密度，`set_density()` 即时切换（无需重启），
+  `reset_layout()` 一键恢复推荐布局；标题栏 6 个次要图标收进「⋯ 更多」菜单解决横向拥挤；
+  状态栏显示 `v13.6.5 · 布局宽松`，方便确认实际运行的版本；新增 `Ctrl+Alt+D` 快捷键。
+- `ui/settings_dialog.py`：外观页新增「栏目密度」下拉 + 「↺ 恢复推荐布局」按钮（信号即时生效）。
+- `app/assistant.py`：命令面板 `📐 切换栏目密度` / `↺ 恢复推荐布局`，托盘菜单同步入口。
+- `core/cli.py` + `android/core/cli.py`：`--ui-layout` 只读诊断、`--ui-density NAME` 直接设置。
+- `main.py`：中文安装路径下 Qt 平台插件加载失败（`no Qt platform plugin could be initialized`）
+  的自动兜底 —— 复制 platforms 到纯英文临时目录。
+
+### GitHub 流程与文档
+- 新增 `docs/GitHub_提交与Release发布流程.md`：首次配置 / 身份 / token / SSH / 建远程仓库 /
+  日常提交（约定式信息）/ 冲突处理 / 版本发布清单 / tag 触发 CI / `gh release create` /
+  网页发布 / 发布后校验 / 8 条常见问题排错表。
+- 新增一键脚本 `scripts/git_push.sh`（门禁 → 提交 → 推送）与
+  `scripts/github_release.sh`（门禁 → 打包 → SHA 校验 → 可选推 tag → 建 Release 上传资产）。
+- README 新增「🚀 如何使用」章节（运行 / 布局四档 / 提交 / 发布 / 源码运行）与流程入口。
+
 ## [13.6.4] - 2026-11-12
 
 ### 界面优化：聊天窗口上/下栏布局放宽（拥挤度修复）

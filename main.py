@@ -17,8 +17,40 @@ v13.1：GUI EXE 是 console=False 的窗口程序，sys.stdout 可能为 None，
 """
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
+
+
+def _fix_qt_plugin_path():
+    """v13.6.5：安装路径含中文时，Qt 5 无法加载平台插件。
+
+    现象：启动报错 "no Qt platform plugin could be initialized"。
+    处理：仅当插件目录含非 ASCII 字符时，把 platforms 复制到纯 ASCII 的
+    临时目录，并显式设置 QT_QPA_PLATFORM_PLUGIN_PATH（首次复制后复用）。
+    PyInstaller 打包的 EXE 解压到英文临时目录，本来就不受影响。
+    """
+    try:
+        import PyQt5
+        src = os.path.join(os.path.dirname(PyQt5.__file__), "Qt5",
+                           "plugins", "platforms")
+        if not os.path.isdir(src) or src.isascii():
+            return
+        dst = os.path.join(tempfile.gettempdir(), "starry_qt_plugins",
+                           "platforms")
+        os.makedirs(dst, exist_ok=True)
+        for name in os.listdir(src):
+            if name.lower().endswith(".dll") or name.lower().endswith(".so"):
+                to = os.path.join(dst, name)
+                if not os.path.exists(to):
+                    shutil.copy2(os.path.join(src, name), to)
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = dst
+    except Exception:                       # noqa: BLE001 - 失败不阻断启动
+        pass
+
+
+_fix_qt_plugin_path()
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog

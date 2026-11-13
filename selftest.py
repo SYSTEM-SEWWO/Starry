@@ -5050,6 +5050,53 @@ def test_v1363_utf8_stream():
     check("显式 utf-8 头也正确", out3 == chinese, repr(out3))
 
 
+def test_v1365_layout():
+    """V13.6.5：栏目密度四档 + 旧窗口尺寸一次性迁移（零 Qt 依赖）。"""
+    section("V13.6.5 · 栏目密度与布局迁移")
+    from core import uilayout
+    from core.config import DEFAULT_CONFIG
+
+    class _Cfg:
+        def __init__(self, size=None, version=None, density=None):
+            self.data = {}
+            if version is not None:
+                self.data["layout_version"] = version
+            if density is not None:
+                self.data["ui_density"] = density
+            self.appearance = {"window_size": list(size) if size else None}
+            self.saves = 0
+        def save(self):
+            self.saves += 1
+
+    labels = list(uilayout.DENSITY_LABELS)
+    ms = [uilayout.metrics(d) for d in labels]
+    check("密度档位四档齐全",
+          labels == ["紧凑", "标准", "宽松", "超宽松"], str(labels))
+    vals = [m["send_h"] for m in ms]
+    check("控件尺寸逐档递增", all(a < b for a, b in zip(vals, vals[1:])), str(vals))
+    check("未知密度回落默认",
+          uilayout.normalize("no-such") == uilayout.DEFAULT_DENSITY)
+
+    c = _Cfg(size=[430, 640])
+    changed, why = uilayout.migrate(c)
+    check("旧窗口 430×640 迁移到 620×860",
+          changed and c.appearance["window_size"] == [620, 860], why)
+    check("迁移写入标记且只写盘一次",
+          c.data["layout_version"] == uilayout.LAYOUT_VERSION and c.saves == 1)
+    c.appearance["window_size"] = [900, 1000]
+    c.saves = 0
+    check("二次迁移不覆盖用户手动尺寸",
+          not uilayout.migrate(c)[0] and c.appearance["window_size"] == [900, 1000]
+          and c.saves == 0)
+    m = uilayout.reset(_Cfg(size=[400, 400]), "超宽松")
+    check("reset 应用指定档位", m["window"] == [720, 960])
+    check("全局默认密度与窗口",
+          DEFAULT_CONFIG.get("ui_density") == "宽松"
+          and DEFAULT_CONFIG["appearance"]["window_size"] == [620, 860])
+    check("CLI 布局摘要可用",
+          "宽松" in uilayout.format_layout(_Cfg(size=[620, 860])))
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AI 桌面助手")
@@ -5094,6 +5141,7 @@ def main():
     test_v1361_lmstudio_usable()
     test_v1362_image_guard()
     test_v1363_utf8_stream()
+    test_v1365_layout()
     test_v3_screenshots(app)
     print("\n==================================")
     print("结果：%d 通过，%d 失败" % (len(PASS), len(FAIL)))

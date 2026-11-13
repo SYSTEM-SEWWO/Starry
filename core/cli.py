@@ -412,6 +412,10 @@ def build_arg_parser():
                    help="--ui-scale 用的屏幕可用区域，如 2560x1440")
     r.add_argument("--dpi", metavar="N", type=int, default=96,
                    help="--ui-scale 用的逻辑 DPI（默认 96）")
+    r.add_argument("--ui-layout", action="store_true",
+                   help="打印当前栏目密度与上下栏尺寸（只读诊断）")
+    r.add_argument("--ui-density", metavar="NAME",
+                   help="设置栏目密度：紧凑 / 标准 / 宽松 / 超宽松")
 
     # ---- v13.6：模型配置诊断（排查「改不了模型 / 默认 lmstudio」）----
     s = p.add_argument_group("v13.6 模型配置诊断")
@@ -1096,8 +1100,29 @@ def _run_v135(args, cfg, out):
         _emit(out, "（纯计算展示，未修改任何配置；应用内可在设置 → 外观"
                    "点「立即按屏幕适配」）\n")
 
+    if args.ui_density:
+        did = True
+        from core import uilayout
+        name = uilayout.normalize(args.ui_density)
+        cfg.data["ui_density"] = name
+        cfg.data["layout_version"] = uilayout.LAYOUT_VERSION
+        cfg.appearance["window_size"] = list(uilayout.metrics(name)["window"])
+        cfg.appearance["window_position"] = None
+        try:
+            cfg.save()
+        except Exception:                       # noqa: BLE001
+            pass
+        _emit(out, "已设置栏目密度：%s，推荐窗口 %s\n"
+              % (name, uilayout.metrics(name)["window"]))
+
+    if args.ui_layout:
+        did = True
+        from core import uilayout
+        _emit(out, uilayout.format_layout(cfg) + "\n")
+
     if not did:
-        _emit(out, "请指定 --devlog / --debug / --log-level / --ui-scale。\n")
+        _emit(out, "请指定 --devlog / --debug / --log-level / --ui-scale / "
+                   "--ui-layout / --ui-density。\n")
         return 2
     return 0
 
@@ -1422,7 +1447,8 @@ def run_cli(argv=None, out=None):
         return _run_v136(args, cfg, out)
 
     # ---- v13.5 开发者调试 / 日志 / 自动缩放 ----
-    if (args.devlog or args.debug or args.log_level or args.ui_scale):
+    if (args.devlog or args.debug or args.log_level or args.ui_scale
+            or args.ui_layout or args.ui_density):
         return _run_v135(args, cfg, out)
 
     # ---- v13.4 API Key 指引 / 缓存清理 / 模型能力 ----

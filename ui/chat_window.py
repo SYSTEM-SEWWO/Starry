@@ -8,6 +8,8 @@ from PyQt5.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QApplication, QGraphicsDropShadowEffect, QTextEdit,
                              QShortcut, QFileDialog, QSizePolicy)
 
+from core import uilayout
+from core.config import APP_VERSION
 from core.attachment import load_file_attachment, image_attachment
 from core.agent.skills import SkillManager
 from core.agent.market import PluginMarket
@@ -25,12 +27,18 @@ class InputEdit(QTextEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._min_h = 88
-        self._max_h = 170
+        self._min_h = 112
+        self._max_h = 210
+        self._pad = 26
         self.document().documentLayout().documentSizeChanged.connect(self._auto_height)
 
+    def set_bounds(self, min_h, max_h, pad):
+        """v13.6.5：按栏目密度调整输入框高度区间（即时生效）"""
+        self._min_h, self._max_h, self._pad = int(min_h), int(max_h), int(pad)
+        self.setFixedHeight(max(self._min_h, min(self._max_h, self.height())))
+
     def _auto_height(self, size):
-        h = max(self._min_h, min(self._max_h, int(size.height()) + 22))
+        h = max(self._min_h, min(self._max_h, int(size.height()) + self._pad))
         self.setFixedHeight(h)
 
     def keyPressEvent(self, e):
@@ -72,11 +80,15 @@ class ChatWindow(QWidget):
     speak_requested = pyqtSignal(str)           # 朗读某条回复（正文文本）
     variant_selected = pyqtSignal(int)          # 切换回答变体（索引）
     command_palette_requested = pyqtSignal()    # 打开命令面板（Ctrl+K）
+    density_cycle_requested = pyqtSignal()      # v13.6.5：Ctrl+Alt+D 切换栏目密度
     closed = pyqtSignal()
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.cfg = config
+        # v13.6.5：一次性升级旧窗口尺寸（config.json 里的 430×640 会覆盖
+        # 代码默认值，导致「改了布局却看不到变化」），并打迁移标记。
+        self._layout_migration = uilayout.migrate(config)
         self._theme = get_theme(config.appearance.get("theme", "light"))
         self._fs = int(config.appearance.get("font_size", 14))
         self._current_bubble = None
@@ -101,13 +113,13 @@ class ChatWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowFlag(Qt.WindowStaysOnTopHint,
                            bool(self.cfg.appearance.get("always_on_top", True)))
-        size = self.cfg.appearance.get("window_size") or [430, 640]
+        size = self.cfg.appearance.get("window_size") or uilayout.metrics(
+            self.cfg.data.get("ui_density"))["window"]
         self.resize(int(size[0]), int(size[1]))
-        self.setMinimumSize(340, 420)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 16)   # 给阴影留空间
         outer.setSpacing(0)
+        self._outer = outer
         # v7.3：内容面板改为真·毛玻璃（FrostGlass），背后桌面经抓屏模糊后透出
         self.container = FrostGlass(self, radius=RADIUS_L)
         self.container.setObjectName("FrostHost")
@@ -133,6 +145,7 @@ class ChatWindow(QWidget):
         tl = QHBoxLayout(self.title_bar)
         tl.setContentsMargins(16, 0, 10, 0)
         tl.setSpacing(10)
+        self._tl = tl
         self.logo = QPushButton("✦")
         self.logo.setObjectName("LogoLabel")
         self.logo.setFlat(True)
@@ -156,42 +169,36 @@ class ChatWindow(QWidget):
         self.sessions_btn.setFixedSize(30, 30)
         self.sessions_btn.setCursor(Qt.PointingHandCursor)
         self.sessions_btn.clicked.connect(self.sessions_requested)
-        tl.addWidget(self.sessions_btn)
         self.library_btn = QPushButton("📚")
         self.library_btn.setObjectName("FlatButton")
         self.library_btn.setToolTip("资料库：导入文档，让 AI 基于你的资料回答")
         self.library_btn.setFixedSize(30, 30)
         self.library_btn.setCursor(Qt.PointingHandCursor)
         self.library_btn.clicked.connect(self.library_requested)
-        tl.addWidget(self.library_btn)
         self.memory_btn = QPushButton("🧠")
         self.memory_btn.setObjectName("FlatButton")
         self.memory_btn.setToolTip("长期记忆：星语记住的关于你与项目的信息")
         self.memory_btn.setFixedSize(30, 30)
         self.memory_btn.setCursor(Qt.PointingHandCursor)
         self.memory_btn.clicked.connect(self.memory_requested)
-        tl.addWidget(self.memory_btn)
         self.models_btn = QPushButton("📦")
         self.models_btn.setObjectName("FlatButton")
         self.models_btn.setToolTip("模型库：从阿里魔塔下载 GGUF 本地模型（llama.cpp）")
         self.models_btn.setFixedSize(30, 30)
         self.models_btn.setCursor(Qt.PointingHandCursor)
         self.models_btn.clicked.connect(self.models_requested)
-        tl.addWidget(self.models_btn)
         self.artifacts_btn = QPushButton("🧪")
         self.artifacts_btn.setObjectName("FlatButton")
         self.artifacts_btn.setToolTip("产物预览：在浏览器预览最近回复里的 HTML 产物")
         self.artifacts_btn.setFixedSize(30, 30)
         self.artifacts_btn.setCursor(Qt.PointingHandCursor)
         self.artifacts_btn.clicked.connect(self.artifacts_requested)
-        tl.addWidget(self.artifacts_btn)
         self.palette_btn = QPushButton("✨")
         self.palette_btn.setObjectName("FlatButton")
         self.palette_btn.setToolTip("命令面板（Ctrl+K）：所有功能一键可达")
         self.palette_btn.setFixedSize(30, 30)
         self.palette_btn.setCursor(Qt.PointingHandCursor)
         self.palette_btn.clicked.connect(self.command_palette_requested)
-        tl.addWidget(self.palette_btn)
         self.settings_btn = QPushButton("⚙")
         self.settings_btn.setObjectName("FlatButton")
         self.settings_btn.setToolTip("设置")
@@ -204,6 +211,26 @@ class ChatWindow(QWidget):
         self.min_btn.setFixedSize(30, 30)
         self.min_btn.clicked.connect(self._play_minimize)
         tl.addWidget(self.min_btn)
+
+        # v13.6.5：次要功能收进「⋯ 更多」，标题栏不再横向挤成一团。
+        # 原按钮对象/信号全部保留，仅从布局移入菜单（兼容性不变）。
+        self._more_btn = QPushButton("⋯")
+        self._more_btn.setObjectName("FlatButton")
+        self._more_btn.setToolTip("更多功能（会话 / 资料库 / 记忆 / 模型库 / 产物 / 命令面板）")
+        self._more_btn.setCursor(Qt.PointingHandCursor)
+        self._more_menu = QMenu(self)
+        for _btn, _text in (
+                (self.sessions_btn, "💬 会话管理"),
+                (self.library_btn, "📚 资料库"),
+                (self.memory_btn, "🧠 长期记忆"),
+                (self.models_btn, "📦 本地模型库"),
+                (self.artifacts_btn, "🧪 产物预览"),
+                (self.palette_btn, "✨ 命令面板")):
+            _btn.hide()
+            _a = self._more_menu.addAction(_text)
+            _a.triggered.connect(lambda _c=False, _b=_btn: _b.click())
+        self._more_btn.setMenu(self._more_menu)
+        tl.insertWidget(tl.indexOf(self.settings_btn), self._more_btn)
         self.close_btn = QPushButton("✕")
         self.close_btn.setObjectName("FlatButton")
         self.close_btn.setToolTip("关闭（退到托盘）")
@@ -222,6 +249,7 @@ class ChatWindow(QWidget):
         self.msg_layout.setContentsMargins(14, 14, 14, 12)
         self.msg_layout.setSpacing(14)
         self.msg_layout.addStretch(1)
+        self._msg_layout = self.msg_layout
         self.scroll.setWidget(self.messages_widget)
         self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_value)
         root.addWidget(self.scroll, 1)
@@ -231,6 +259,7 @@ class ChatWindow(QWidget):
         il = QVBoxLayout(input_frame)
         il.setContentsMargins(14, 10, 14, 14)
         il.setSpacing(10)
+        self._il, self._input_frame = il, input_frame
 
         # 附件栏
         self.attach_bar = AttachmentBar()
@@ -240,6 +269,7 @@ class ChatWindow(QWidget):
         # ---- 智能体行：技能 / 工具 / 插件市场 ----
         agent_row = QHBoxLayout()
         agent_row.setSpacing(8)
+        self._agent_row = agent_row
         self.skill_combo = QComboBox()
         self.skill_combo.setToolTip("切换技能：为 AI 切换专家人设（提示词）")
         self.skill_combo.setMinimumWidth(112)
@@ -292,6 +322,7 @@ class ChatWindow(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
+        self._btn_row = btn_row
         self.hint_label = QLabel("Enter 发送 · Shift+Enter 换行")
         self.hint_label.setObjectName("MutedLabel")
         btn_row.addWidget(self.hint_label)
@@ -377,6 +408,11 @@ class ChatWindow(QWidget):
         # 截图快捷键
         sc = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
         sc.activated.connect(self.screenshot_requested)
+        sc2 = QShortcut(QKeySequence("Ctrl+Alt+D"), self)
+        sc2.activated.connect(self.density_cycle_requested)
+
+        # 统一按当前密度档位应用到全部栏目（也是即时切换的入口）
+        self._apply_layout()
 
         # 命令面板快捷键（Ctrl+K，Raycast / VSCode 式全局入口）
         ck = QShortcut(QKeySequence("Ctrl+K"), self)
@@ -725,6 +761,71 @@ class ChatWindow(QWidget):
     # ------------------------------------------------------------------
     # 主题 / 状态
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # v13.6.5 栏目密度：一处定义、全窗口应用、即时切换
+    # ------------------------------------------------------------------
+    def _apply_layout(self, name=None):
+        name = uilayout.normalize(name or self.cfg.data.get("ui_density"))
+        m = uilayout.metrics(name)
+        self._outer.setContentsMargins(*m["outer"])
+        self.title_bar.setFixedHeight(m["title_h"])
+        self._tl.setContentsMargins(*m["title_m"])
+        self._tl.setSpacing(m["title_gap"])
+        self.logo.setFixedSize(m["logo"], m["logo"])
+        self.model_combo.setMinimumWidth(m["model_w"])
+        for b in (self.sessions_btn, self.library_btn, self.memory_btn,
+                  self.models_btn, self.artifacts_btn, self.palette_btn,
+                  self.settings_btn, self.min_btn, self.close_btn,
+                  self._more_btn):
+            b.setFixedSize(m["icon"], m["icon"])
+        self._msg_layout.setContentsMargins(*m["msg_m"])
+        self._msg_layout.setSpacing(m["msg_gap"])
+        self._il.setContentsMargins(*m["input_m"])
+        self._il.setSpacing(m["input_gap"])
+        self._agent_row.setSpacing(m["agent_gap"])
+        self.skill_combo.setMinimumWidth(m["skill_w"])
+        for b in (self.tools_btn, self.market_btn, self.automation_btn,
+                  self.panel_btn):
+            b.setFixedHeight(m["agent_h"])
+        self.input.set_bounds(m["input_min"], m["input_max"], m["input_pad"])
+        self._btn_row.setSpacing(m["btn_gap"])
+        self.deep_btn.setFixedHeight(m["deep_h"])
+        for b in (self.file_btn, self.img_btn, self.shot_btn):
+            b.setFixedSize(m["small_icon"], m["small_icon"])
+        self.prompt_btn.setFixedSize(m["prompt_icon"], m["prompt_icon"])
+        self.send_btn.setFixedHeight(m["send_h"])
+        self.stop_btn.setFixedHeight(m["send_h"])
+        self.status.setFixedHeight(m["status_h"])
+        self.status.setContentsMargins(*m["status_m"])
+        self.grip.setFixedSize(m["grip"], m["grip"])
+        self.setMinimumSize(*m["min_window"])
+        self._layout_metrics = m
+        return m
+
+    def set_density(self, name, resize=True):
+        """即时切换栏目密度（无需重启）；返回该档位尺寸。"""
+        name = uilayout.normalize(name)
+        m = self._apply_layout(name)
+        self.cfg.data["ui_density"] = name
+        if resize:
+            self.resize(*m["window"])
+            self.cfg.appearance["window_size"] = list(m["window"])
+            self.cfg.appearance["window_position"] = None
+        self.cfg.save()
+        self._update_status()
+        self.show_hint("栏目布局已切换为「%s」（%d × %d）"
+                       % (name, m["window"][0], m["window"][1]))
+        return m
+
+    def reset_layout(self, name=None):
+        """一键恢复推荐布局（重置窗口尺寸 / 位置 / 密度）。"""
+        m = uilayout.reset(self.cfg, name)
+        self._apply_layout(uilayout.normalize(self.cfg.data.get("ui_density")))
+        self.resize(*m["window"])
+        self._update_status()
+        self.show_hint("已恢复推荐布局（%d × %d）" % tuple(m["window"]))
+        return m
+
     def apply_theme(self):
         self._theme = get_theme(self.cfg.appearance.get("theme", "light"))
         base_fs = int(self.cfg.appearance.get("font_size", 14))
@@ -751,8 +852,10 @@ class ChatWindow(QWidget):
         model = self.cfg.model() or "未选择"
         ready = "就绪" if self.cfg.is_ready() else "未配置 Key"
         extra = " · 本地" if self.cfg.is_local() else ""
-        text = "%s · %s · %s%s" % (info.get("name", self.cfg.provider),
-                                   model, ready, extra)
+        density = uilayout.normalize(self.cfg.data.get("ui_density"))
+        text = "%s · %s · %s%s · v%s · 布局%s" % (
+            info.get("name", self.cfg.provider), model, ready, extra,
+            APP_VERSION, density)
         if self._ctx_limit > 0:
             text += " · 上下文 " + context_usage_str(self._ctx_used,
                                                     self._ctx_limit)
@@ -783,10 +886,11 @@ class ChatWindow(QWidget):
         if size:
             self.resize(int(size[0]), int(size[1]))
         # 小屏保护：窗口不超过可用区域（保留标题栏可见）
-        max_w = max(340, screen.width() - 40)
-        max_h = max(420, screen.height() - 90)
-        if self.width() > max_w or self.height() > max_h:
-            self.resize(min(self.width(), max_w), min(self.height(), max_h))
+        m = uilayout.metrics(self.cfg.data.get("ui_density"))
+        max_w = max(m["min_window"][0], screen.width() - 40)
+        max_h = max(m["min_window"][1], screen.height() - 90)
+        self.resize(max(m["min_window"][0], min(self.width(), max_w)),
+                    max(m["min_window"][1], min(self.height(), max_h)))
         pos = self.cfg.appearance.get("window_position")
         if pos:
             x = min(max(int(pos[0]), screen.left()),

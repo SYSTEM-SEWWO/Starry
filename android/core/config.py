@@ -16,7 +16,7 @@ import tempfile
 
 APP_ID = "ai-desktop-assistant"
 APP_NAME = "星语 · Starry"
-APP_VERSION = "13.6.4"
+APP_VERSION = "13.6.5"
 
 # ---------------------------------------------------------------------------
 # 内置提供商预设（全部为 OpenAI 兼容 /chat/completions 接口，Ollama 亦兼容）
@@ -292,9 +292,12 @@ DEFAULT_CONFIG = {
         "ball_size": 56,
         "ball_position": None,       # [x, y]
         "window_position": None,     # [x, y]
-        "window_size": [430, 640],
+        "window_size": [620, 860],
         "minimize_to_ball": True,
     },
+    # v13.6.5：栏目密度与布局迁移标记（一次性升级旧窗口尺寸）
+    "ui_density": "宽松",
+    "layout_version": 2,
 }
 
 

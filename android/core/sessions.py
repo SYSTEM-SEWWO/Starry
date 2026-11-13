@@ -379,6 +379,47 @@ class SessionStore:
         self.save()
         return list(msgs)
 
+    def clear_messages(self, session_id=None, keep_system=True):
+        """v13.7：只清空指定会话的消息，绝不触碰其它会话。
+
+        keep_system=True 时保留该会话的 system 提示（保证上下文仍完整）。
+        返回 (是否成功, 移除的非 system 消息数)。
+        """
+        sid = session_id or self.current_id()
+        session = self.get(sid)
+        if session is None:
+            return False, 0
+        msgs = list(session.get("messages") or [])
+        kept = [m for m in msgs
+                if keep_system and isinstance(m, dict)
+                and m.get("role") == "system"]
+        removed = len(msgs) - len(kept)
+        session["messages"] = kept
+        session["updated"] = _now()
+        self.save()
+        return True, removed
+
+    def delete_messages(self, session_id, indices):
+        """v13.7：按索引批量删除某会话内的消息（倒序删，保持其余顺序）。
+
+        只作用于 session_id 指定的会话；会话本身与会话列表均不变。
+        返回 (是否成功, 实际删除数)。
+        """
+        sid = session_id or self.current_id()
+        session = self.get(sid)
+        if session is None:
+            return False, 0
+        msgs = list(session.get("messages") or [])
+        todo = sorted({int(i) for i in (indices or [])
+                       if isinstance(i, int) and 0 <= int(i) < len(msgs)},
+                      reverse=True)
+        for i in todo:
+            del msgs[i]
+        session["messages"] = msgs
+        session["updated"] = _now()
+        self.save()
+        return True, len(todo)
+
     def delete_message(self, session_id, index):
         """V11.2：删除某条消息，返回更新后历史；越界 / 不存在返回 False。"""
         session = self.get(session_id)

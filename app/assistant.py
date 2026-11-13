@@ -133,6 +133,8 @@ class AssistantApp(QObject):
         self._assistant_text = ""
         self._current_bubble = None
         self._settings = None
+        self._open_children = []          # v13.7 非模态子窗口引用（防 GC）
+        self._visible_hist_indices = []   # 气泡序号 -> history 真实索引
         self._market_dialog = None
         self._session_dialog = None
         self._prompt_dialog = None
@@ -277,6 +279,8 @@ class AssistantApp(QObject):
         self.window.variant_selected.connect(self._on_variant_selected)
         self.window.command_palette_requested.connect(self.open_command_palette)
         self.window.density_cycle_requested.connect(self._cycle_density)
+        self.window.delete_selected_requested.connect(self.delete_selected_messages)
+        self.window.background_changed.connect(self.window.apply_background)
         self.window.panel_requested.connect(self.open_panel)
         self.window.sessions_requested.connect(self.open_sessions)
         self.window.prompts_requested.connect(self.open_prompts)
@@ -316,6 +320,8 @@ class AssistantApp(QObject):
         menu.addAction("✨ 命令面板 (Ctrl+K)", self.open_command_palette)
         menu.addAction("🎨 切换主题", self._cycle_theme)
         menu.addAction("📐 切换栏目密度", self._cycle_density)
+        menu.addAction("☑ 选择 / 删除消息",
+                       lambda: self.window.set_selection_mode(True))
         menu.addAction("↺ 恢复推荐布局", self.window.reset_layout)
         menu.addAction("🛰 网关仪表盘", self.open_gateway)
         menu.addAction("关于 星语", self.open_about)
@@ -412,6 +418,13 @@ class AssistantApp(QObject):
         self.history.append({"role": "user", "content": content})
         self.sessions.append({"role": "user", "content": content})
         self.window.add_user_message(text.strip(), attachments)
+        try:
+            if not hasattr(self, "_visible_hist_indices"):
+                self._visible_hist_indices = []
+            self._visible_hist_indices.append(len(self.history) - 1)
+            self.window.tag_last_message(len(self._visible_hist_indices) - 1)
+        except Exception:                    # noqa: BLE001 - 兼容绕过 __init__ 的测试桩
+            pass
         self.stats.record_message(text)
         self.stats.save()
 
@@ -577,6 +590,8 @@ class AssistantApp(QObject):
             ("diff", "🔀", "分支对比", "对比当前会话与另一会话的消息差异", "对话"),
             ("merge", "🧬", "会话合并", "把另一会话的消息合并进当前会话（自动去重）", "对话"),
             ("delete_last", "🗑", "删除最后一条消息", "撤回刚发出 / 收到的最后一条", "对话"),
+            ("select_messages", "☑", "选择并删除消息",
+             "在当前对话内勾选指定消息删除，保留其余消息（v13.7）", "对话"),
             ("artifacts", "🧪", "产物预览", "在浏览器预览最近回复里的 HTML 产物", "文件"),
             # ---- v12.0 电脑端新功能（与 CLI / 安卓共用 core.stardust）----
             ("echo_card", "✦", "生成本轮星尘卡", "本地生成可复制的问答小卡，零 token", "对话"),
@@ -722,6 +737,9 @@ class AssistantApp(QObject):
             self.open_merge_picker()
         elif cid == "delete_last":
             self.delete_last_message()
+        elif cid == "select_messages":
+            self.window.set_selection_mode(True)
+            self.window.show_hint("已开启消息勾选，勾选后点「删除选中」")
         elif cid == "artifacts":
             self.open_artifacts()
         # ---- v12.0 新增命令 ----
@@ -803,7 +821,7 @@ class AssistantApp(QObject):
             answer=answer, prompt=prompt,
             branched_from=cur.get("branched_from"),
             ts=time.strftime("%Y-%m-%d %H:%M"))
-        InsightDialog(card, "✦ 星尘卡", self.window).exec_()
+        self._show_child(InsightDialog(card, "✦ 星尘卡", self.window))
 
     def open_budget_plan(self):
         """📐 离线给出当前会话的上下文裁剪计划，不修改任何数据。"""
@@ -824,7 +842,7 @@ class AssistantApp(QObject):
             "", "裁剪下标：`%s`" % plan["drop_indices"], "",
             "> 离线相对估算，不代表任何模型的精确计费；此面板只读，不修改会话。",
         ]
-        InsightDialog("\n".join(md), "📐 上下文预算", self.window).exec_()
+        self._show_child(InsightDialog("\n".join(md), "📐 上下文预算", self.window))
 
     def open_archive_export(self):
         """📤 导出 .starry 存档（复用 core.cli._run_archive，保证三端口径一致）。"""
@@ -871,8 +889,8 @@ class AssistantApp(QObject):
         from ui.insight_dialog import InsightDialog
         buf = io.StringIO()
         cli_mod._run_doctor(buf)
-        InsightDialog("```\n" + buf.getvalue() + "\n```",
-                      "🩺 运行环境自检", self.window).exec_()
+        self._show_child(InsightDialog("```\n" + buf.getvalue() + "\n```",
+                                      "🩺 运行环境自检", self.window))
 
     # ------------------------------------------------------------------
     # v13.0 整体项目工作台（WorkBuddy 式）
@@ -907,7 +925,7 @@ class AssistantApp(QObject):
             dlg._on_load()
         elif action == "update":
             dlg._on_update_check()
-        dlg.exec_()
+        self._show_child(dlg)
 
     def open_hub(self, action=None):
         """打开 Skills Hub；action=update 时直接调起技能更新检查。"""
@@ -916,12 +934,12 @@ class AssistantApp(QObject):
                         cfg=getattr(self.window, "cfg", None))
         if action == "update":
             dlg._on_check_update()
-        dlg.exec_()
+        self._show_child(dlg)
 
     def open_api_diag(self):
         """v13.2：打开 API 诊断面板（脱敏、可复制、可清空）。"""
         from ui.api_diag_dialog import ApiDiagDialog
-        ApiDiagDialog(self.window).exec_()
+        self._show_child(ApiDiagDialog(self.window))
 
     def _cycle_model(self):
         """在窗口模型下拉中循环切换到下一个模型"""
@@ -952,20 +970,36 @@ class AssistantApp(QObject):
         self.window.show_hint("已切换主题：%s" % THEME_LABELS.get(nxt, nxt))
 
     def _clear_current_session(self):
-        """清空当前会话（保留系统提示）"""
+        """v13.7：清空**当前目标对话**的记录，不影响其它对话。
+
+        旧实现清完立刻 show_welcome() 又插入一条欢迎气泡，看起来像「没清空」；
+        且 set_messages 未显式传 session_id，切会话后可能写错目标。
+        现在显式锁定 sid、只改该会话、用空态提示替代欢迎气泡。
+        """
         if self.worker is not None and self.worker.isRunning():
             self.window.show_hint("正在生成回复，稍后再清空")
             return
+        sid = self.sessions.current_id()
+        before = list(self.sessions.list())
         system = [self.history[0]] if (self.history and
                                        self.history[0].get("role") == "system") else []
-        prompt = self.skills.system_prompt_for()
         if not system:
-            system = [{"role": "system", "content": prompt}]
-        self.history = system
-        self.sessions.set_messages(list(self.history))
+            system = [{"role": "system",
+                       "content": self.skills.system_prompt_for()}]
+        self.history = list(system)
+        ok, removed = self.sessions.clear_messages(sid, keep_system=True)
+        if not ok:
+            # 兜底：存储层没有该方法时用 set_messages 精确写目标会话
+            self.sessions.set_messages(list(self.history), session_id=sid)
+            removed = -1
+        self._visible_hist_indices = []
         self.window.clear_messages()
-        self.window.show_welcome()
-        self.window.show_hint("已清空当前会话")
+        self.window.set_empty_hint("✅ 本对话记录已清空，输入消息开始新的一轮")
+        # 其它会话数量与 id 必须完全不变
+        after = list(self.sessions.list())
+        assert len(before) == len(after), "清空影响了会话列表"
+        self.window.show_hint("已清空当前对话%s" % (
+            "（移除 %d 条）" % removed if removed and removed > 0 else ""))
 
     # ------------------------------------------------------------------
     # 网关仪表盘（v6 旗舰界面）
@@ -979,8 +1013,11 @@ class AssistantApp(QObject):
         from ui.theme import get_theme
         self._gateway_dialog.apply_theme(
             get_theme(self.cfg.appearance.get("theme", "light")))
-        self._gateway_dialog.show()
-        self._gateway_dialog.raise_()
+        if not self._gateway_dialog.isVisible():
+            self._show_child(self._gateway_dialog)
+        else:
+            self._gateway_dialog.raise_()
+            self._gateway_dialog.activateWindow()
 
     # ------------------------------------------------------------------
     # 网页版接入（v6：DeepSeek 网页版浏览器 harness）
@@ -1351,8 +1388,11 @@ class AssistantApp(QObject):
             self._market_dialog.changed.connect(self._on_market_changed)
             self._market_dialog.finished.connect(self._on_market_closed)
         self._market_dialog._load_cards()
-        self._market_dialog.show()
-        self._market_dialog.raise_()
+        if not self._market_dialog.isVisible():
+            self._show_child(self._market_dialog)
+        else:
+            self._market_dialog.raise_()
+            self._market_dialog.activateWindow()
 
     def _on_market_closed(self):
         self._market_dialog = None
@@ -1369,10 +1409,13 @@ class AssistantApp(QObject):
     def _render_history(self):
         """把 history 渲染到消息区（启动恢复 / 切换会话）"""
         self.window.clear_messages()
-        for m in self.history:
+        self._visible_hist_indices = []
+        for _idx, m in enumerate(self.history):
             role = m.get("role")
             if role == "user":
                 self.window.add_user_message(message_text(m) or "（空）")
+                self._visible_hist_indices.append(_idx)
+                self.window.tag_last_message(len(self._visible_hist_indices) - 1)
             elif role == "assistant" and m.get("content"):
                 bubble = self.window.start_assistant_message()
                 bubble.thinking.skip()
@@ -1384,6 +1427,8 @@ class AssistantApp(QObject):
                     bubble.set_variants(variants, int(m.get("active") or 0))
                 else:
                     bubble.actions.hide()
+                self._visible_hist_indices.append(_idx)
+                self.window.tag_last_message(len(self._visible_hist_indices) - 1)
         self.window.set_session_title(self._session_title)
 
     def _save_current_session(self):
@@ -1403,8 +1448,11 @@ class AssistantApp(QObject):
             self._session_dialog.finished.connect(
                 self._on_session_dialog_closed)
         self._session_dialog._reload()
-        self._session_dialog.show()
-        self._session_dialog.raise_()
+        if not self._session_dialog.isVisible():
+            self._show_child(self._session_dialog)
+        else:
+            self._session_dialog.raise_()
+            self._session_dialog.activateWindow()
 
     def _on_session_dialog_closed(self):
         self._session_dialog = None
@@ -1436,8 +1484,11 @@ class AssistantApp(QObject):
         self._prompt_dialog.set_current_text(
             self.window.input.toPlainText())
         self._prompt_dialog._reload()
-        self._prompt_dialog.show()
-        self._prompt_dialog.raise_()
+        if not self._prompt_dialog.isVisible():
+            self._show_child(self._prompt_dialog)
+        else:
+            self._prompt_dialog.raise_()
+            self._prompt_dialog.activateWindow()
 
     def _on_prompt_dialog_closed(self):
         self._prompt_dialog = None
@@ -1456,8 +1507,11 @@ class AssistantApp(QObject):
             self._library_dialog.finished.connect(
                 self._on_library_closed)
         self._library_dialog._reload()
-        self._library_dialog.show()
-        self._library_dialog.raise_()
+        if not self._library_dialog.isVisible():
+            self._show_child(self._library_dialog)
+        else:
+            self._library_dialog.raise_()
+            self._library_dialog.activateWindow()
 
     def open_memory(self):
         """打开长期记忆管理对话框（查看 / 删除 / 开关）。"""
@@ -1465,7 +1519,7 @@ class AssistantApp(QObject):
         dlg = MemoryDialog(self.memory, self.window)
         dlg.changed.connect(
             lambda: self.window.set_memory_count(self.memory.count()))
-        dlg.exec_()
+        self._show_child(dlg)
 
     def open_models(self):
         """打开模型库（阿里魔塔 GGUF 下载 / llama.cpp 本地服务）"""
@@ -1476,8 +1530,11 @@ class AssistantApp(QObject):
                 self._on_local_models_changed)
             self._models_dialog.finished.connect(
                 self._on_models_dialog_closed)
-        self._models_dialog.show()
-        self._models_dialog.raise_()
+        if not self._models_dialog.isVisible():
+            self._show_child(self._models_dialog)
+        else:
+            self._models_dialog.raise_()
+            self._models_dialog.activateWindow()
 
     def open_rea(self):
         """V9.0：一键接入 REA 逆向工程（GitHub 爆火 MCP 逆向工具）。
@@ -1581,8 +1638,11 @@ class AssistantApp(QObject):
             self._global_search_dialog.apply_query(query)
         else:
             self._global_search_dialog._reload()
-        self._global_search_dialog.show()
-        self._global_search_dialog.raise_()
+        if not self._global_search_dialog.isVisible():
+            self._show_child(self._global_search_dialog)
+        else:
+            self._global_search_dialog.raise_()
+            self._global_search_dialog.activateWindow()
 
     def _on_global_search_open(self, ref):
         """全局搜索结果跳转：会话 / 收藏切过去，其余打开对应功能页。"""
@@ -1648,10 +1708,11 @@ class AssistantApp(QObject):
         from ui.cache_dialog import CacheDialog
         if self._cache_dialog is None:
             self._cache_dialog = CacheDialog(self.cfg, self.window)
-            self._cache_dialog.finished.connect(
-                lambda: setattr(self, "_cache_dialog", None))
-        self._cache_dialog.show()
-        self._cache_dialog.raise_()
+        if not self._cache_dialog.isVisible():
+            self._show_child(self._cache_dialog)
+        else:
+            self._cache_dialog.raise_()
+            self._cache_dialog.activateWindow()
 
     # ------------------------------------------------------------------
     # v13.5 · 开发者调试模式 / 自动缩放 / 退出自动清理
@@ -1663,8 +1724,11 @@ class AssistantApp(QObject):
             self._devtools_dialog = DevToolsDialog(self.cfg, self.window)
             self._devtools_dialog.finished.connect(
                 lambda: setattr(self, "_devtools_dialog", None))
-        self._devtools_dialog.show()
-        self._devtools_dialog.raise_()
+        if not self._devtools_dialog.isVisible():
+            self._show_child(self._devtools_dialog)
+        else:
+            self._devtools_dialog.raise_()
+            self._devtools_dialog.activateWindow()
 
     def _screen_recommendation(self):
         from PyQt5.QtWidgets import QApplication
@@ -1798,7 +1862,12 @@ class AssistantApp(QObject):
         box.setInformativeText("是否把当前模型切换为推荐模型？")
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         box.setDefaultButton(QMessageBox.No)
-        if box.exec_() == QMessageBox.Yes:
+        box.open()
+        box.finished.connect(lambda r, b=box: self._on_confirm_result(r, b))
+        return
+
+    def _on_confirm_result(self, result, box):
+        if box.standardButton(box.clickedButton()) == QMessageBox.Yes:
             self.cfg.set_model(route["model"])
             try:
                 self.models.reload_combo()
@@ -1844,8 +1913,11 @@ class AssistantApp(QObject):
             self._automation_dialog.finished.connect(
                 self._on_automation_closed)
         self._automation_dialog._reload()
-        self._automation_dialog.show()
-        self._automation_dialog.raise_()
+        if not self._automation_dialog.isVisible():
+            self._show_child(self._automation_dialog)
+        else:
+            self._automation_dialog.raise_()
+            self._automation_dialog.activateWindow()
 
     def _on_automation_closed(self):
         self._automation_dialog = None
@@ -1942,8 +2014,11 @@ class AssistantApp(QObject):
             self._panel_dialog = ExpertPanelDialog(
                 self.skills, self._make_client, self.cfg, self.window)
             self._panel_dialog.finished.connect(self._on_panel_closed)
-        self._panel_dialog.show()
-        self._panel_dialog.raise_()
+        if not self._panel_dialog.isVisible():
+            self._show_child(self._panel_dialog)
+        else:
+            self._panel_dialog.raise_()
+            self._panel_dialog.activateWindow()
 
     def _on_panel_closed(self):
         self._panel_dialog = None
@@ -1957,8 +2032,11 @@ class AssistantApp(QObject):
             self._mail_dialog = MailDialog(
                 self.cfg, self._make_client, self.window)
             self._mail_dialog.finished.connect(self._on_mail_closed)
-        self._mail_dialog.show()
-        self._mail_dialog.raise_()
+        if not self._mail_dialog.isVisible():
+            self._show_child(self._mail_dialog)
+        else:
+            self._mail_dialog.raise_()
+            self._mail_dialog.activateWindow()
 
     def _on_mail_closed(self):
         self._mail_dialog = None
@@ -1977,14 +2055,8 @@ class AssistantApp(QObject):
                                              self.hotkey, self.window)
             self._about_dialog.finished.connect(
                 self._on_about_closed)
-        if self._settings is not None and self._settings.isVisible():
-            # 设置对话框是模态的：关于以模态方式叠在其上，避免被阻断输入
-            self._about_dialog.setModal(True)
-            self._about_dialog.exec_()
-        else:
-            self._about_dialog.setModal(False)
-            self._about_dialog.show()
-            self._about_dialog.raise_()
+        # v13.7：设置页已非模态，关于也统一非模态，主窗口始终可点
+        self._show_child(self._about_dialog)
 
     def _on_about_closed(self):
         self._about_dialog = None
@@ -2062,6 +2134,42 @@ class AssistantApp(QObject):
         except Exception as e:  # noqa: BLE001
             self.window.show_hint("导出失败：%s" % e, 6000)
 
+    def delete_selected_messages(self, bubble_indices):
+        """v13.7：删除当前对话内勾选的消息，保留未选中消息。
+
+        会话本身、会话列表、标题均不变；只按索引从 history 与 sessions 中移除。
+        """
+        if self.worker is not None and self.worker.isRunning():
+            self.window.show_hint("正在生成回复，稍后再删除")
+            return
+        mapping = getattr(self, "_visible_hist_indices", [])
+        hist_idx = sorted({mapping[i] for i in (bubble_indices or [])
+                           if isinstance(i, int) and 0 <= i < len(mapping)},
+                          reverse=True)
+        if not hist_idx:
+            self.window.show_hint("没有可删除的消息")
+            return
+        sid = self.sessions.current_id()
+        # history 启动时可能比 sessions 多一条 system（_load_current_session
+        # 会补齐），因此两边索引要分别计算，否则会删错消息。
+        stored = (self.sessions.get(sid) or {}).get("messages") or []
+        offset = len(self.history) - len(stored)
+        store_idx = sorted({i - offset for i in hist_idx
+                            if 0 <= i - offset < len(stored)}, reverse=True)
+        if store_idx:
+            self.sessions.delete_messages(sid, store_idx)
+        else:
+            # 兜底：无法对齐时按删除后的 history 精确写回目标会话
+            kept = [m for _i, m in enumerate(self.history)
+                    if _i not in hist_idx and m.get("role") != "system"]
+            self.sessions.set_messages(kept, session_id=sid)
+        for i in hist_idx:
+            if 0 <= i < len(self.history):
+                del self.history[i]
+        self._render_history()
+        self.window.set_selection_mode(False)
+        self.window.show_hint("已删除 %d 条所选消息（其余消息保留）" % len(hist_idx))
+
     def delete_last_message(self):
         """V11.2：删除当前会话最后一条消息（撤回刚发出/收到的内容）。
 
@@ -2117,8 +2225,11 @@ class AssistantApp(QObject):
             self._starred_dialog.finished.connect(
                 lambda: setattr(self, "_starred_dialog", None))
         self._starred_dialog._reload()
-        self._starred_dialog.show()
-        self._starred_dialog.raise_()
+        if not self._starred_dialog.isVisible():
+            self._show_child(self._starred_dialog)
+        else:
+            self._starred_dialog.raise_()
+            self._starred_dialog.activateWindow()
 
     def _on_starred_jump(self, session_id):
         self._starred_dialog = None
@@ -2229,7 +2340,7 @@ class AssistantApp(QObject):
         box.setText(text or "（摘要为空）")
         box.setStandardButtons(QMessageBox.Ok)
         box.setMinimumWidth(420)
-        box.exec_()
+        box.open()
 
     # ------------------------------------------------------------------
     # V11.4：消息引用（Quote）/ 分支对话（Branch）
@@ -2381,8 +2492,8 @@ class AssistantApp(QObject):
         cur = self.sessions.get(sid) or {}
         stats = session_stats(cur)
         overview = overview_stats(self.sessions.data.get("sessions") or [])
-        InsightDialog(format_stats_markdown(stats, overview),
-                      "📊 对话统计洞察", self.window).exec_()
+        self._show_child(InsightDialog(format_stats_markdown(stats, overview),
+                                      "📊 对话统计洞察", self.window))
 
     def open_diff_picker(self):
         """🔀 选一个会话与当前会话做分支对比。"""
@@ -2396,8 +2507,8 @@ class AssistantApp(QObject):
         sid = self.sessions.current_id()
         diff = diff_sessions(self.sessions.get(sid) or {},
                              self.sessions.get(other_id) or {})
-        InsightDialog(format_diff_markdown(diff),
-                      "🔀 会话对比结果", self.window).exec_()
+        self._show_child(InsightDialog(format_diff_markdown(diff),
+                                      "🔀 会话对比结果", self.window))
 
     def open_merge_picker(self):
         """🧬 把另一个会话的消息合并进当前会话。"""
@@ -2526,6 +2637,56 @@ class AssistantApp(QObject):
         return ok, msg
 
     # ------------------------------------------------------------------
+    # v13.7 非模态子窗口：主窗口与子窗口同时可用
+    # ------------------------------------------------------------------
+    def _show_child(self, dlg, on_finished=None):
+        """以非模态方式打开子窗口，避免 QDialog.exec_() 应用模态阻塞主窗口。
+
+        - 显式 NonModal（exec_ 默认 ApplicationModal 是「主窗口卡死」的根因）
+        - 跟随主窗口置顶，防止子窗口被置顶的主窗口盖住看起来像卡死
+        - 持有引用防 GC；关闭后统一刷新主窗口状态
+        """
+        from PyQt5.QtCore import Qt
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.NonModal)
+        if bool(self.cfg.appearance.get("always_on_top", True)):
+            dlg.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        if dlg not in self._open_children:
+            self._open_children.append(dlg)
+
+        def _cleanup(*_a):
+            try:
+                self._open_children.remove(dlg)
+            except ValueError:
+                pass
+            self._on_child_closed()
+            if on_finished is not None:
+                try:
+                    on_finished()
+                except Exception:               # noqa: BLE001
+                    pass
+        try:
+            dlg.finished.connect(_cleanup)
+        except Exception:                       # noqa: BLE001
+            pass
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
+
+    def _on_child_closed(self):
+        """子窗口关闭后刷新主窗口状态，不重建窗口、不丢对话。"""
+        try:
+            self.window._update_status()
+            self.window.set_busy(False)
+            self.window.refresh_skills()
+            self.window._refresh_tools_button()
+            self.models.reload_combo()
+            self.window.show()
+        except Exception:                       # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
     # 设置
     # ------------------------------------------------------------------
     def open_settings(self):
@@ -2545,8 +2706,13 @@ class AssistantApp(QObject):
             self._settings.auto_scale_requested.connect(self.apply_auto_scale)
             self._settings.density_requested.connect(self.window.set_density)
             self._settings.layout_reset_requested.connect(self.window.reset_layout)
-        if self._settings.exec_() == SettingsDialog.Accepted:
-            self._apply_settings()
+            self._settings.accepted.connect(self._apply_settings)
+            self._settings.background_changed.connect(self.window.apply_background)
+        if not self._settings.isVisible():
+            self._show_child(self._settings)
+        else:
+            self._settings.raise_()
+            self._settings.activateWindow()
 
     def _refresh_open_dialogs_theme(self, theme, eff_fs):
         """v13.5 控制逻辑优化：统一把主题/字号同步到所有已打开窗口。

@@ -19,7 +19,7 @@ on:
       version:
         description: "版本号（不带 v，例如 13.6.1）"
         required: true
-        default: "13.6.5"
+        default: "13.7.0"
 
 concurrency:
   group: release-${{ github.ref }}
@@ -219,11 +219,50 @@ jobs:
           retention-days: 90
 
   # ------------------------------------------------------------------
+  # 2.8) 多平台资产（v13.7）：macOS / Linux / Android 源码分发包 + 真实 DEB
+  # ------------------------------------------------------------------
+  multiplatform:
+    name: 生成 macOS / Linux / Android / DEB 资产
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 生成多平台资产与校验和
+        run: python scripts/build_release_assets.py
+
+      - name: 校验 DEB 归档结构
+        run: |
+          python - <<'PY'
+          import os
+          v = "${{ needs.verify.outputs.version }}"
+          p = "releases/星语Starry-CLI-v%s.deb" % v
+          assert os.path.isfile(p), p
+          assert open(p, "rb").read(8) == b"!<arch>\n"
+          print("DEB_OK", p, os.path.getsize(p))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multiplatform-${{ needs.verify.outputs.version }}
+          path: |
+            releases/*.tar.gz
+            releases/*.zip
+            releases/*.deb
+            releases/SHA256SUMS-*.txt
+          if-no-files-found: error
+          retention-days: 90
+
+  # ------------------------------------------------------------------
   # 3) 发布：正文取 RELEASE_NOTES，资产为完整 zip + 校验和 + 根目录 EXE
   # ------------------------------------------------------------------
   publish:
     name: 发布到 GitHub Releases
-    needs: [verify, snapshot, root-exe]
+    needs: [verify, snapshot, root-exe, multiplatform]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -239,6 +278,11 @@ jobs:
           name: root-exe-${{ needs.verify.outputs.version }}
           path: root-exe-assets
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: multiplatform-${{ needs.verify.outputs.version }}
+          path: multiplatform-assets
+
       - name: 发布 Release（完整 zip + 校验和 + 根目录后代版本 EXE）
         uses: softprops/action-gh-release@v2
         with:
@@ -247,6 +291,10 @@ jobs:
             release-assets/SHA256SUMS-*.txt
             root-exe-assets/*.exe
             root-exe-assets/*.exe.sha256
+            multiplatform-assets/*.tar.gz
+            multiplatform-assets/*.zip
+            multiplatform-assets/*.deb
+            multiplatform-assets/SHA256SUMS-*.txt
           body_path: release-assets/RELEASE_NOTES.md
           append_body: true
           fail_on_unmatched_files: true

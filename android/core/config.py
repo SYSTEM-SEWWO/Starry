@@ -16,7 +16,7 @@ import tempfile
 
 APP_ID = "ai-desktop-assistant"
 APP_NAME = "星语 · Starry"
-APP_VERSION = "13.6.5"
+APP_VERSION = "13.7.0"
 
 # ---------------------------------------------------------------------------
 # 内置提供商预设（全部为 OpenAI 兼容 /chat/completions 接口，Ollama 亦兼容）
@@ -294,6 +294,12 @@ DEFAULT_CONFIG = {
         "window_position": None,     # [x, y]
         "window_size": [620, 860],
         "minimize_to_ball": True,
+        # v13.7 主窗口背景自定义：空值 = 跟随主题毛玻璃
+        "background_color": "",
+        "background_image": "",
+        "background_opacity": 35,      # 0-100，自定义色/图叠加强度
+        "background_mode": "theme",    # theme / color / image
+        "message_selection": False,   # 是否显示消息勾选框
     },
     # v13.6.5：栏目密度与布局迁移标记（一次性升级旧窗口尺寸）
     "ui_density": "宽松",

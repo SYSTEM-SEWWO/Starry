@@ -5097,6 +5097,58 @@ def test_v1365_layout():
           "宽松" in uilayout.format_layout(_Cfg(size=[620, 860])))
 
 
+def test_v137_fixes():
+    """V13.7：清空隔离 / 勾选删除 / 背景配置 / 非模态与异步修复。"""
+    section("V13.7 · 对话管理与交互缺陷修复")
+    import io as _io
+    import shutil as _sh
+    import tempfile as _tf
+    from core.sessions import SessionStore
+    from core.config import DEFAULT_CONFIG
+
+    d = _tf.mkdtemp(prefix="starry_v137_st_")
+    try:
+        st = SessionStore(os.path.join(d, "sessions.json"))
+        sid1 = st.current_id()
+        for i in range(4):
+            st.append({"role": "user", "content": "A%d" % i}, session_id=sid1)
+        st.create("其它对话")
+        sid2 = st.current_id()
+        for i in range(3):
+            st.append({"role": "user", "content": "B%d" % i}, session_id=sid2)
+        ok, n = st.clear_messages(sid1)
+        check("清空只作用于目标对话", ok and n == 4
+              and st.get(sid1)["messages"] == [], "removed=%s" % n)
+        check("其它对话不受影响",
+              [m["content"] for m in st.get(sid2)["messages"]]
+              == ["B0", "B1", "B2"])
+        check("会话列表数量不变", len(st.list()) == 2)
+        ok2, n2 = st.delete_messages(sid2, [1])
+        check("勾选删除只删所选", ok2 and n2 == 1
+              and [m["content"] for m in st.get(sid2)["messages"]]
+              == ["B0", "B2"])
+        check("删除后会话与列表不变",
+              st.current_id() == sid2 and len(st.list()) == 2)
+        check("重新加载后清空持久化",
+              SessionStore(st.path).get(sid1)["messages"] == [])
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+
+    ap = DEFAULT_CONFIG["appearance"]
+    check("背景配置默认键齐备", all(k in ap for k in (
+        "background_mode", "background_color", "background_image",
+        "background_opacity")))
+    cd = _io.open("ui/cache_dialog.py", encoding="utf-8").read()
+    ast_ = _io.open("app/assistant.py", encoding="utf-8").read()
+    cw = _io.open("ui/chat_window.py", encoding="utf-8").read()
+    check("缓存清理改为后台线程", "class _CacheWorker(QThread)" in cd)
+    check("缓存失败也恢复交互", "_on_worker_failed" in cd)
+    check("子窗口统一非模态", "def _show_child" in ast_
+          and "setWindowModality(Qt.NonModal)" in ast_)
+    check("拖拽覆盖窗口子树", "installEventFilter(self)" in cw
+          and "_INTERACTIVE" in cw)
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AI 桌面助手")
@@ -5142,6 +5194,7 @@ def main():
     test_v1362_image_guard()
     test_v1363_utf8_stream()
     test_v1365_layout()
+    test_v137_fixes()
     test_v3_screenshots(app)
     print("\n==================================")
     print("结果：%d 通过，%d 失败" % (len(PASS), len(FAIL)))

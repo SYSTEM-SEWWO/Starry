@@ -94,6 +94,11 @@ class FrostGlass(QFrame):
         self._bg = None                     # 缓存的模糊后背景 QPixmap
         self._faux = False                  # 是否走了降级
         self._paused = False
+        # v13.7 主窗口背景自定义
+        self._custom_mode = "theme"        # theme / color / image
+        self._custom_color = QColor("#ffffff")
+        self._custom_pixmap = None
+        self._custom_opacity = 0.35
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
@@ -107,6 +112,25 @@ class FrostGlass(QFrame):
     def apply_theme(self, t):
         self._theme = t or self._theme
         self._regrab()
+
+    def set_custom_background(self, mode="theme", color="", image="", opacity=35):
+        """v13.7：设置主窗口背景，立即生效（无需重启）。
+
+        mode=theme 跟随主题毛玻璃；color 用纯色叠加；image 平铺/缩放图片。
+        opacity 0-100 控制自定义层不透明度，保证文字仍可读。
+        """
+        mode = mode if mode in ("theme", "color", "image") else "theme"
+        self._custom_mode = mode
+        self._custom_opacity = max(0.0, min(1.0, float(opacity or 0) / 100.0))
+        pix = QPixmap()
+        if image and os.path.isfile(image):
+            pix.load(image)
+        self._custom_pixmap = pix if (not pix.isNull() and mode == "image") else None
+        c = QColor(color) if color else QColor("#ffffff")
+        self._custom_color = c if c.isValid() else QColor("#ffffff")
+        if mode == "image" and self._custom_pixmap is None:
+            self._custom_mode = "color"    # 图片失效时退回纯色，不留空白
+        self.update()
 
     def set_radius(self, r):
         self._radius = int(r)
@@ -198,6 +222,19 @@ class FrostGlass(QFrame):
             p.drawPixmap(self.rect(), self._bg, self._bg.rect())
         else:
             self._paint_faux(p, self.rect())
+
+        # v13.7 自定义背景层：在毛玻璃之上、主题 tint 之下绘制
+        if self._custom_mode in ("color", "image") and self._custom_opacity > 0:
+            p.save()
+            p.setOpacity(self._custom_opacity)
+            if self._custom_mode == "image" and self._custom_pixmap is not None:
+                scaled = self._custom_pixmap.scaled(
+                    self.size(), Qt.KeepAspectRatioByExpanding,
+                    Qt.SmoothTransformation)
+                p.drawPixmap(self.rect(), scaled, scaled.rect())
+            else:
+                p.fillPath(path, self._custom_color)
+            p.restore()
 
         dark = _is_dark(self._theme)
         alpha = self._tint_alpha

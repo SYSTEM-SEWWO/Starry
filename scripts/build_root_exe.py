@@ -11,7 +11,7 @@
     ./星语Starry-GUI-v<版本>.exe
     ./星语Starry-GUI-v<版本>.exe.sha256
 
-例：APP_VERSION = "13.6.5" → 星语Starry-GUI-v13.6.5.exe 放在项目根目录。
+例：APP_VERSION = "13.7.0" → 星语Starry-GUI-v13.7.0.exe 放在项目根目录。
 历史版本的 EXE 不会被覆盖，因此每代产物都会保留在根目录里，方便回溯。
 
 可选参数：

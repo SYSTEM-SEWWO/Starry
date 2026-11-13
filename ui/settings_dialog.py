@@ -8,7 +8,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QTabWidget, QWidget, QLabel, QComboBox, QLineEdit,
                              QCheckBox, QSpinBox, QDoubleSpinBox, QTextEdit,
                              QPushButton, QDialogButtonBox, QFileDialog,
-                             QMessageBox, QFrame, QListWidget, QApplication)
+                             QMessageBox, QFrame, QListWidget, QApplication,
+                             QColorDialog, QSlider)
 
 from core import models as model_reg
 from core.config import PROVIDERS
@@ -65,6 +66,7 @@ class SettingsDialog(QDialog):
     auto_scale_requested = pyqtSignal()      # v13.5：立即按屏幕自动适配缩放
     density_requested = pyqtSignal(str)      # v13.6.5：即时切换栏目密度
     layout_reset_requested = pyqtSignal()    # v13.6.5：一键恢复推荐布局
+    background_changed = pyqtSignal()        # v13.7：主窗口背景立即应用
     web_switch_requested = pyqtSignal(str)   # v7：切换到指定网页站点
     gateway_requested = pyqtSignal()         # v6：打开网关仪表盘
 
@@ -95,6 +97,66 @@ class SettingsDialog(QDialog):
                            + settings_qss(self._theme, self._fs))
 
     # ------------------------------------------------------------------
+    # ---- v13.7 背景自定义辅助 ----
+    def _current_bg_settings(self):
+        return {
+            "background_mode": self.bg_mode_combo.currentData(),
+            "background_color": self._bg_color_name,
+            "background_image": self.bg_image_edit.text().strip(),
+            "background_opacity": int(self.bg_opacity_slider.value()),
+        }
+
+    def _apply_background_now(self):
+        ap = self.cfg.appearance
+        ap.update(self._current_bg_settings())
+        try:
+            self.cfg.save()
+        except Exception:                       # noqa: BLE001
+            pass
+        self.background_changed.emit()
+        self._refresh_banner()
+
+    def _reset_background(self):
+        self.bg_mode_combo.setCurrentIndex(0)
+        self._bg_color_name = "#ffffff"
+        self.bg_image_edit.clear()
+        self.bg_opacity_slider.setValue(35)
+        self._sync_bg_preview()
+        self._apply_background_now()
+
+    def _pick_bg_color(self):
+        from PyQt5.QtGui import QColor
+        c = QColorDialog.getColor(QColor(self._bg_color_name or "#ffffff"),
+                                  self, "选择主窗口背景色")
+        if c.isValid():
+            self._bg_color_name = c.name()
+            self.bg_mode_combo.setCurrentIndex(1)
+            self._sync_bg_preview()
+
+    def _pick_bg_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择主窗口背景图片", "",
+            "图片文件 (*.png *.jpg *.jpeg *.webp *.bmp);;所有文件 (*)")
+        if path:
+            self.bg_image_edit.setText(path)
+            self.bg_mode_combo.setCurrentIndex(2)
+
+    def _sync_bg_preview(self):
+        self.bg_color_preview.setStyleSheet(
+            "background:%s;border:1px solid #c9d4e0;border-radius:4px;"
+            % (self._bg_color_name or "#ffffff"))
+
+    def _load_bg_values(self):
+        ap = self.cfg.appearance
+        mode = ap.get("background_mode", "theme")
+        idx = self.bg_mode_combo.findData(mode)
+        self.bg_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._bg_color_name = ap.get("background_color", "") or "#ffffff"
+        self.bg_image_edit.setText(ap.get("background_image", "") or "")
+        self.bg_opacity_slider.setValue(int(ap.get("background_opacity", 35)))
+        self.bg_opacity_label.setText("%d%%" % self.bg_opacity_slider.value())
+        self._sync_bg_preview()
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -313,6 +375,60 @@ class SettingsDialog(QDialog):
         self.layout_reset_btn.setToolTip("重置窗口尺寸与位置为当前密度的推荐值")
         self.layout_reset_btn.clicked.connect(self.layout_reset_requested.emit)
         form2.addRow("", self.layout_reset_btn)
+
+        # ---- v13.7 主窗口背景自定义 ----
+        for w in section_label(
+                "🖼 主窗口背景",
+                "可设为纯色或本地图片；点「立即应用」无需重启即可看到效果，"
+                "保存设置后长期生效。"):
+            form2.addRow("", w)
+        self.bg_mode_combo = QComboBox()
+        self.bg_mode_combo.addItem("跟随主题（毛玻璃）", "theme")
+        self.bg_mode_combo.addItem("纯色背景", "color")
+        self.bg_mode_combo.addItem("图片背景", "image")
+        form2.addRow("背景模式", self.bg_mode_combo)
+
+        bg_color_row = QHBoxLayout()
+        self.bg_color_btn = QPushButton("选择颜色")
+        self.bg_color_btn.clicked.connect(self._pick_bg_color)
+        bg_color_row.addWidget(self.bg_color_btn)
+        self.bg_color_preview = QLabel("     ")
+        self.bg_color_preview.setFixedWidth(46)
+        bg_color_row.addWidget(self.bg_color_preview)
+        bg_color_row.addStretch(1)
+        form2.addRow("背景颜色", bg_color_row)
+
+        bg_img_row = QHBoxLayout()
+        self.bg_image_edit = QLineEdit()
+        self.bg_image_edit.setPlaceholderText("选择一张本地图片（png / jpg / webp）")
+        self.bg_image_edit.setReadOnly(True)
+        bg_img_row.addWidget(self.bg_image_edit, 1)
+        self.bg_image_btn = QPushButton("浏览…")
+        self.bg_image_btn.clicked.connect(self._pick_bg_image)
+        bg_img_row.addWidget(self.bg_image_btn)
+        form2.addRow("背景图片", bg_img_row)
+
+        bg_op_row = QHBoxLayout()
+        self.bg_opacity_slider = QSlider(Qt.Horizontal)
+        self.bg_opacity_slider.setRange(5, 90)
+        self.bg_opacity_slider.setValue(35)
+        self.bg_opacity_slider.valueChanged.connect(
+            lambda v: self.bg_opacity_label.setText("%d%%" % v))
+        bg_op_row.addWidget(self.bg_opacity_slider, 1)
+        self.bg_opacity_label = QLabel("35%")
+        bg_op_row.addWidget(self.bg_opacity_label)
+        form2.addRow("叠加强度", bg_op_row)
+
+        bg_btn_row = QHBoxLayout()
+        self.bg_apply_btn = QPushButton("立即应用")
+        self.bg_apply_btn.setObjectName("PrimaryAction")
+        self.bg_apply_btn.clicked.connect(self._apply_background_now)
+        bg_btn_row.addWidget(self.bg_apply_btn)
+        self.bg_reset_btn = QPushButton("恢复默认")
+        self.bg_reset_btn.clicked.connect(self._reset_background)
+        bg_btn_row.addWidget(self.bg_reset_btn)
+        bg_btn_row.addStretch(1)
+        form2.addRow("", bg_btn_row)
 
         self.ball_spin = QSpinBox()
         self.ball_spin.setRange(40, 96)
@@ -687,6 +803,7 @@ class SettingsDialog(QDialog):
         if s_idx >= 0:
             self.scale_combo.setCurrentIndex(s_idx)
         from core import uilayout
+        self._load_bg_values()
         d_idx = self.density_combo.findText(
             uilayout.normalize(self.cfg.data.get("ui_density")))
         if d_idx >= 0:
@@ -1485,6 +1602,7 @@ class SettingsDialog(QDialog):
         _new_density = uilayout.normalize(self.density_combo.currentText())
         if _new_density != uilayout.normalize(self.cfg.data.get("ui_density")):
             self.density_requested.emit(_new_density)
+        self.cfg.appearance.update(self._current_bg_settings())
         self.cfg.data["ui_density"] = _new_density
         self.cfg.data["layout_version"] = uilayout.LAYOUT_VERSION
         # v13.5：自动缩放 / 缓存自动清理 / 开发者调试

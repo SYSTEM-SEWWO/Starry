@@ -6,7 +6,9 @@ from PyQt5.QtGui import QColor, QKeySequence
 from PyQt5.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QScrollArea, QComboBox, QMenu,
                              QApplication, QGraphicsDropShadowEffect, QTextEdit,
-                             QShortcut, QFileDialog, QSizePolicy)
+                             QShortcut, QFileDialog, QSizePolicy, QCheckBox,
+                             QLineEdit, QSlider, QScrollBar, QTextBrowser,
+                             QSpinBox, QListWidget)
 
 from core import uilayout
 from core.config import APP_VERSION
@@ -81,6 +83,9 @@ class ChatWindow(QWidget):
     variant_selected = pyqtSignal(int)          # 切换回答变体（索引）
     command_palette_requested = pyqtSignal()    # 打开命令面板（Ctrl+K）
     density_cycle_requested = pyqtSignal()      # v13.6.5：Ctrl+Alt+D 切换栏目密度
+    selection_mode_changed = pyqtSignal(bool)  # v13.7：消息勾选模式
+    delete_selected_requested = pyqtSignal(list)  # v13.7：删除所选历史索引
+    background_changed = pyqtSignal()          # v13.7：主窗口背景立即应用
     closed = pyqtSignal()
 
     def __init__(self, config, parent=None):
@@ -97,6 +102,9 @@ class ChatWindow(QWidget):
         self._start_geo = None
         self._hint_timer = None
         self._stick_bottom = True
+        self._selection_mode = False
+        self._msg_checks = []            # [(check, history_index, bubble)]
+        self._open_children = []         # 非模态子窗口引用（防 GC）
         self.skills = SkillManager(config)
         self.market = PluginMarket(config)
         self._build_ui()
@@ -229,6 +237,8 @@ class ChatWindow(QWidget):
             _btn.hide()
             _a = self._more_menu.addAction(_text)
             _a.triggered.connect(lambda _c=False, _b=_btn: _b.click())
+        self._menu_select_action = self._more_menu.addAction("☑ 选择 / 删除消息")
+        self._menu_select_action.triggered.connect(self._toggle_selection_mode)
         self._more_btn.setMenu(self._more_menu)
         tl.insertWidget(tl.indexOf(self.settings_btn), self._more_btn)
         self.close_btn = QPushButton("✕")
@@ -265,6 +275,31 @@ class ChatWindow(QWidget):
         self.attach_bar = AttachmentBar()
         self.attach_bar.remove_requested.connect(self._remove_attachment)
         il.addWidget(self.attach_bar)
+
+        # v13.7：消息勾选工具条（默认隐藏）
+        self._selection_bar = QFrame()
+        sb = QHBoxLayout(self._selection_bar)
+        sb.setContentsMargins(6, 2, 6, 2)
+        sb.setSpacing(8)
+        self._selection_info = QLabel("勾选要删除的消息")
+        self._selection_info.setObjectName("MutedLabel")
+        sb.addWidget(self._selection_info)
+        sb.addStretch(1)
+        self._sel_all_btn = QPushButton("全选")
+        self._sel_all_btn.setObjectName("FlatButton")
+        self._sel_all_btn.clicked.connect(self._select_all_messages)
+        sb.addWidget(self._sel_all_btn)
+        self._del_selected_btn = QPushButton("🗑 删除选中")
+        self._del_selected_btn.setObjectName("FlatButton")
+        self._del_selected_btn.setEnabled(False)
+        self._del_selected_btn.clicked.connect(self._emit_delete_selected)
+        sb.addWidget(self._del_selected_btn)
+        self._sel_done_btn = QPushButton("完成")
+        self._sel_done_btn.setObjectName("FlatButton")
+        self._sel_done_btn.clicked.connect(lambda: self.set_selection_mode(False))
+        sb.addWidget(self._sel_done_btn)
+        self._selection_bar.hide()
+        il.addWidget(self._selection_bar)
 
         # ---- 智能体行：技能 / 工具 / 插件市场 ----
         agent_row = QHBoxLayout()
@@ -413,6 +448,11 @@ class ChatWindow(QWidget):
 
         # 统一按当前密度档位应用到全部栏目（也是即时切换的入口）
         self._apply_layout()
+        # v13.7：给整个窗口子树装拖拽过滤器（含动态新增的气泡），
+        # 交互控件在 eventFilter 里显式放行，保证按钮/输入框照常工作。
+        self._drag_installed = False
+        self._install_drag_filter()
+        self.apply_background()
 
         # 命令面板快捷键（Ctrl+K，Raycast / VSCode 式全局入口）
         ck = QShortcut(QKeySequence("Ctrl+K"), self)
@@ -465,13 +505,126 @@ class ChatWindow(QWidget):
             self.example_requested.emit(text)
 
     def clear_messages(self):
-        """清空消息流（切换会话用）"""
-        while self.msg_layout.count() > 1:
+        """v13.7：彻底清空消息流（切换会话 / 清空对话用）。
+
+        旧实现只删除 widget，stretch 与 deleteLater 残留项可能让界面看起来
+        「没清空」；这里把全部 item（含 spacer）移除并重建 stretch，
+        同时清理勾选状态与缓存气泡引用。
+        """
+        while self.msg_layout.count():
             item = self.msg_layout.takeAt(0)
             w = item.widget() if item else None
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
+        self.msg_layout.addStretch(1)
         self._current_bubble = None
+        self._msg_checks = []
+        self._selection_mode = False
+        self._update_selection_bar()
+
+    def set_empty_hint(self, text="已清空对话，输入消息开始新的一轮"):
+        """清空后的空态提示（不是消息气泡，不会被当成对话记录）"""
+        lb = QLabel(text)
+        lb.setObjectName("MutedLabel")
+        lb.setAlignment(Qt.AlignCenter)
+        lb.setWordWrap(True)
+        lb.setProperty("empty_hint", True)
+        self.msg_layout.insertWidget(self.msg_layout.count() - 1, lb)
+        return lb
+
+    # ------------------------------------------------------------------
+    # v13.7 消息勾选 / 批量删除
+    # ------------------------------------------------------------------
+    def _update_selection_bar(self):
+        bar = getattr(self, "_selection_bar", None)
+        if bar is not None:
+            bar.setVisible(self._selection_mode)
+            n = sum(1 for c, _i, _b in self._msg_checks if c.isChecked())
+            self._del_selected_btn.setEnabled(n > 0)
+            self._selection_info.setText("已选 %d 条" % n if n else "勾选要删除的消息")
+
+    def set_selection_mode(self, on):
+        """进入/退出消息勾选模式；on=True 时给每条消息加复选框。"""
+        self._selection_mode = bool(on)
+        for c, _i, _b in self._msg_checks:
+            if self._selection_mode:
+                c.show()
+            else:
+                c.setChecked(False)
+                c.hide()
+        self._update_selection_bar()
+        self.selection_mode_changed.emit(self._selection_mode)
+
+    def _attach_check(self, bubble, index):
+        """给气泡挂一个复选框（放到气泡自身布局首位，不改动消息内容）。"""
+        cb = QCheckBox("")
+        cb.setToolTip("勾选后点「删除选中」，仅删除所选消息")
+        if self._selection_mode:
+            cb.show()
+        else:
+            cb.hide()
+        cb.stateChanged.connect(self._update_selection_bar)
+        lay = bubble.layout()
+        if lay is not None:
+            lay.insertWidget(0, cb)
+        else:
+            cb.setParent(bubble)
+            cb.move(4, 4)
+        self._msg_checks.append((cb, index, bubble))
+
+    def tag_last_message(self, index):
+        """把刚插入的气泡与 history 索引绑定，供勾选删除精确定位。"""
+        for i in range(self.msg_layout.count() - 1, -1, -1):
+            item = self.msg_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, (UserBubble, AssistantBubble)):
+                tagged = any(b is w for _c, _i, b in self._msg_checks)
+                if not tagged:
+                    self._attach_check(w, index)
+                    return True
+        return False
+
+    def _toggle_selection_mode(self):
+        self.set_selection_mode(not self._selection_mode)
+        self.show_hint("已开启消息勾选：勾选后点「删除选中」" if self._selection_mode
+                       else "已退出消息勾选")
+
+    def _select_all_messages(self):
+        any_unchecked = any(not c.isChecked() for c, _i, _b in self._msg_checks)
+        for c, _i, _b in self._msg_checks:
+            c.setChecked(any_unchecked)
+        self._update_selection_bar()
+
+    def _emit_delete_selected(self):
+        idx = self.selected_history_indices()
+        if idx:
+            self.delete_selected_requested.emit(idx)
+        else:
+            self.show_hint("请先勾选要删除的消息")
+
+    def selected_history_indices(self):
+        return sorted({i for c, i, _b in self._msg_checks if c.isChecked()},
+                      reverse=True)
+
+    # ------------------------------------------------------------------
+    # v13.7 主窗口背景自定义（立即生效）
+    # ------------------------------------------------------------------
+    def apply_background(self):
+        ap = self.cfg.appearance
+        self.container.set_custom_background(
+            ap.get("background_mode", "theme"),
+            ap.get("background_color", ""),
+            ap.get("background_image", ""),
+            int(ap.get("background_opacity", 35)))
+
+    def _install_drag_filter(self):
+        if self._drag_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            self._drag_installed = True
 
     def add_user_message(self, text, attachments=None):
         bubble = UserBubble(text or "", self._theme, self._fs, attachments)
@@ -956,24 +1109,65 @@ class ChatWindow(QWidget):
         pos_anim.start()
         self._close_anims = (anim, pos_anim)
 
+    # 交互控件：这些控件收到鼠标事件时必须放行，否则按钮/输入框点不动。
+    _INTERACTIVE = (QPushButton, QComboBox, QTextEdit, QTextBrowser,
+                    QLineEdit, QSlider, QScrollBar, QSpinBox, QListWidget,
+                    QCheckBox, QMenu)
+
+    def _belongs_to_window(self, w):
+        """判断控件是否属于本主窗口子树（排除其它窗口）。"""
+        seen = 0
+        while w is not None and seen < 64:
+            if w is self:
+                return True
+            if isinstance(w, QWidget) and w.isWindow() and w is not self:
+                return False
+            parent = w.parent() if hasattr(w, "parent") else None
+            if not isinstance(parent, QWidget):
+                # 顶层 QObject 没有 QWidget 父亲；只有 self 自身才算本窗口
+                return w is self
+            w = parent
+            seen += 1
+        return False
+
+    def _drag_allowed(self, obj, e):
+        """标题栏 / 背景空白 / 状态栏等可拖；交互控件与其内部一律不拖。"""
+        if not self._belongs_to_window(obj):
+            return False
+        if obj is getattr(self, "grip", None):
+            return False
+        if isinstance(obj, self._INTERACTIVE):
+            return False
+        # 命中位置若压在交互控件上（例如容器事件冒泡），也不拖
+        try:
+            hit = QApplication.widgetAt(e.globalPos())
+        except Exception:                       # noqa: BLE001
+            hit = None
+        if hit is not None and hit is not obj and isinstance(hit, self._INTERACTIVE):
+            return False
+        # QLabel 若允许选中文本 / 含链接，交给它自己处理
+        if isinstance(obj, QLabel):
+            flags = obj.textInteractionFlags()
+            if flags & (Qt.TextSelectableByMouse | Qt.TextBrowserInteraction):
+                return False
+        return True
+
     def eventFilter(self, obj, e):
+        try:
+            return self._event_filter_impl(obj, e)
+        except Exception:                       # noqa: BLE001
+            return False
+
+    def _event_filter_impl(self, obj, e):
         t = e.type()
-        if obj is self.title_bar:
-            if t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
-                self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
-                return True
-            if t == QEvent.MouseMove and (e.buttons() & Qt.LeftButton) and self._drag_pos is not None:
-                self.move(e.globalPos() - self._drag_pos)
-                return True
-            if t == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
-                self._drag_pos = None
-                return True
-        elif obj is getattr(self, "grip", None):
+        # 缩放手柄优先（保持原有行为）
+        if obj is getattr(self, "grip", None):
             if t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
                 self._resize_pos = e.globalPos()
                 self._start_geo = self.geometry()
                 return True
-            if t == QEvent.MouseMove and (e.buttons() & Qt.LeftButton) and self._resize_pos is not None:
+            if t == QEvent.MouseMove and (e.buttons() & Qt.LeftButton) \
+                    and self._resize_pos is not None:
                 delta = e.globalPos() - self._resize_pos
                 g = self._start_geo
                 self.resize(max(self.minimumWidth(), g.width() + delta.x()),
@@ -982,8 +1176,20 @@ class ChatWindow(QWidget):
             if t == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
                 self._resize_pos = None
                 return True
-        elif obj is self.messages_widget and t == QEvent.Resize:
-            # 消息流高度变化时保持贴底
+
+        if t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
+            if self._drag_allowed(obj, e):
+                self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
+            else:
+                self._drag_pos = None
+        elif t == QEvent.MouseMove and (e.buttons() & Qt.LeftButton):
+            if self._drag_pos is not None and self._drag_allowed(obj, e):
+                self.move(e.globalPos() - self._drag_pos)
+                return True
+        elif t == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
+            self._drag_pos = None
+
+        if obj is self.messages_widget and t == QEvent.Resize:
             if self._stick_bottom:
                 self._do_scroll_bottom()
         return super().eventFilter(obj, e)

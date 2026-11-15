@@ -157,7 +157,29 @@ class SessionStore:
     def __init__(self, path=None):
         self.path = path or os.path.join(get_config_dir(), SESSIONS_FILE)
         self.data = {"current": "", "sessions": []}
+        # v13.8：数据版本号 + 变更订阅。任何写盘都会递增版本并通知订阅者，
+        # 让主窗口能感知「其它窗口改了会话」，避免用旧 history 覆盖回去。
+        self.revision = 0
+        self._listeners = []
         self._load()
+
+    def add_listener(self, fn):
+        """订阅数据变更；回调签名 (revision,)。重复订阅会被忽略。"""
+        if fn not in self._listeners:
+            self._listeners.append(fn)
+
+    def remove_listener(self, fn):
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
+
+    def _notify(self):
+        for fn in list(self._listeners):
+            try:
+                fn(self.revision)
+            except Exception:               # noqa: BLE001 - 监听器不得影响写盘
+                pass
 
     # ------------------------------------------------------------------
     # 持久化
@@ -175,7 +197,10 @@ class SessionStore:
 
     def save(self):
         # 统一走 core.storage 的原子写入（v7.2 去重）
-        return storage.save_json(self.path, self.data)
+        result = storage.save_json(self.path, self.data)
+        self.revision += 1
+        self._notify()
+        return result
 
     # ------------------------------------------------------------------
     # 查询

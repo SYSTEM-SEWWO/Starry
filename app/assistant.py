@@ -135,6 +135,12 @@ class AssistantApp(QObject):
         self._settings = None
         self._open_children = []          # v13.7 非模态子窗口引用（防 GC）
         self._visible_hist_indices = []   # 气泡序号 -> history 真实索引
+        # v13.8：任何窗口改动会话数据（删除 / 切换 / 重命名 / 清空）都会写盘并
+        # 递增版本号；这里订阅变更，确保主窗口立刻同步，不会拿旧 history 覆盖回去。
+        try:
+            self.sessions.add_listener(self._on_store_changed)
+        except Exception:                            # noqa: BLE001
+            pass
         self._market_dialog = None
         self._session_dialog = None
         self._prompt_dialog = None
@@ -224,6 +230,47 @@ class AssistantApp(QObject):
     # ------------------------------------------------------------------
     # 会话加载
     # ------------------------------------------------------------------
+    @staticmethod
+    def _core_messages(msgs):
+        """比较用的规范化消息（忽略运行时注入的 system 提示）。"""
+        return [m for m in (msgs or [])
+                if isinstance(m, dict) and m.get("role") != "system"]
+
+    def _on_store_changed(self, _rev):
+        """会话数据被任何窗口改动 → 延迟一帧同步主窗口（合并同批次写盘）。"""
+        try:
+            QTimer.singleShot(0, self._sync_from_store)
+        except Exception:                            # noqa: BLE001
+            pass
+
+    def _sync_from_store(self, force=False):
+        """以 SessionStore 为唯一真源刷新 UI，杜绝「删了又回来 / 重启才更新」。
+
+        只有存储与内存 history 不一致时才重建消息流；生成回复期间不打断流式。
+        """
+        if self.worker is not None and self.worker.isRunning() and not force:
+            return
+        cur = self.sessions.current() or {}
+        stored = list(cur.get("messages") or [])
+        title = cur.get("title") or self._session_title or "新会话"
+        if not force and self._core_messages(stored) == self._core_messages(self.history):
+            # 仅标题类变化，轻量刷新即可
+            if title != self._session_title:
+                self._session_title = title
+                self.window.set_session_title(title)
+            self.window._update_status()
+            return
+        self._load_current_session()
+        self._render_history()
+        self.window._update_status()
+        # 同步刷新已打开的会话列表
+        try:
+            dlg = getattr(self, "_session_dialog", None)
+            if dlg is not None and dlg.isVisible():
+                dlg._reload()
+        except Exception:                            # noqa: BLE001
+            pass
+
     def _load_current_session(self):
         """把当前会话的消息灌入 history，并刷新标题"""
         session = self.sessions.current() or {}
@@ -281,6 +328,11 @@ class AssistantApp(QObject):
         self.window.density_cycle_requested.connect(self._cycle_density)
         self.window.delete_selected_requested.connect(self.delete_selected_messages)
         self.window.background_changed.connect(self.window.apply_background)
+        self.window.delete_one_requested.connect(self.delete_one_message)
+        self.window.edit_one_requested.connect(self.edit_one_message)
+        self.window.copy_one_requested.connect(self.copy_one_message)
+        self.window.star_one_requested.connect(self.star_one_message)
+        self.window.find_requested.connect(self.open_find_in_chat)
         self.window.panel_requested.connect(self.open_panel)
         self.window.sessions_requested.connect(self.open_sessions)
         self.window.prompts_requested.connect(self.open_prompts)
@@ -322,6 +374,9 @@ class AssistantApp(QObject):
         menu.addAction("📐 切换栏目密度", self._cycle_density)
         menu.addAction("☑ 选择 / 删除消息",
                        lambda: self.window.set_selection_mode(True))
+        menu.addAction("🔍 查找对话内容 (Ctrl+F)", self.open_find_in_chat)
+        menu.addAction("📊 本对话消息统计", self.show_message_stats)
+        menu.addAction("💾 备份全部会话", self.backup_sessions_now)
         menu.addAction("↺ 恢复推荐布局", self.window.reset_layout)
         menu.addAction("🛰 网关仪表盘", self.open_gateway)
         menu.addAction("关于 星语", self.open_about)
@@ -380,6 +435,12 @@ class AssistantApp(QObject):
         attachments = attachments or []
         if self.worker is not None and self.worker.isRunning():
             return
+        # v13.8：斜杠命令（/new /clear /select /find /help …）
+        from core import messagetools as _mt
+        _cmd, _args = _mt.parse_slash_command(text)
+        if _cmd:
+            self._run_slash_command(_cmd, _args)
+            return
 
         has_image = any(a.kind == Attachment.IMAGE for a in attachments)
 
@@ -416,7 +477,6 @@ class AssistantApp(QObject):
             content = parts
 
         self.history.append({"role": "user", "content": content})
-        self.sessions.append({"role": "user", "content": content})
         self.window.add_user_message(text.strip(), attachments)
         try:
             if not hasattr(self, "_visible_hist_indices"):
@@ -427,6 +487,13 @@ class AssistantApp(QObject):
             pass
         self.stats.record_message(text)
         self.stats.save()
+        # v13.8：统一落盘（去掉 history / sessions 双写导致的状态漂移）
+        try:
+            self.sessions.set_messages(
+                [m for m in self.history if m.get("role") != "system"],
+                session_id=self.sessions.current_id())
+        except AttributeError:      # 兼容把 sessions 当 list 的测试桩
+            pass
 
         if images_dropped:
             n = sum(1 for a in attachments if a.kind == Attachment.IMAGE)
@@ -591,7 +658,17 @@ class AssistantApp(QObject):
             ("merge", "🧬", "会话合并", "把另一会话的消息合并进当前会话（自动去重）", "对话"),
             ("delete_last", "🗑", "删除最后一条消息", "撤回刚发出 / 收到的最后一条", "对话"),
             ("select_messages", "☑", "选择并删除消息",
-             "在当前对话内勾选指定消息删除，保留其余消息（v13.7）", "对话"),
+             "在当前对话内勾选指定消息删除，保留其余消息", "对话"),
+            ("find_in_chat", "🔍", "查找对话内容",
+             "在当前对话内按关键词查找消息（Ctrl+F）", "对话"),
+            ("message_stats", "📊", "本对话消息统计",
+             "条数 / 字数 / 估算 token / 角色分布", "对话"),
+            ("backup_sessions", "💾", "备份全部会话",
+             "把 sessions.json 快照到 backups/ 目录（保留最近 10 份）", "文件"),
+            ("restore_sessions", "♻️", "恢复会话备份",
+             "从备份恢复全部会话（恢复前自动再备份一次）", "文件"),
+            ("export_selected", "📤", "导出所选消息",
+             "把勾选的消息导出为 Markdown", "文件"),
             ("artifacts", "🧪", "产物预览", "在浏览器预览最近回复里的 HTML 产物", "文件"),
             # ---- v12.0 电脑端新功能（与 CLI / 安卓共用 core.stardust）----
             ("echo_card", "✦", "生成本轮星尘卡", "本地生成可复制的问答小卡，零 token", "对话"),
@@ -740,6 +817,16 @@ class AssistantApp(QObject):
         elif cid == "select_messages":
             self.window.set_selection_mode(True)
             self.window.show_hint("已开启消息勾选，勾选后点「删除选中」")
+        elif cid == "find_in_chat":
+            self.open_find_in_chat()
+        elif cid == "message_stats":
+            self.show_message_stats()
+        elif cid == "backup_sessions":
+            self.backup_sessions_now()
+        elif cid == "restore_sessions":
+            self.restore_sessions_now()
+        elif cid == "export_selected":
+            self.export_selected_messages()
         elif cid == "artifacts":
             self.open_artifacts()
         # ---- v12.0 新增命令 ----
@@ -969,6 +1056,177 @@ class AssistantApp(QObject):
         self._apply_settings()
         self.window.show_hint("已切换主题：%s" % THEME_LABELS.get(nxt, nxt))
 
+    # ------------------------------------------------------------------
+    # v13.8 消息工具箱（单条操作 / 查找 / 斜杠命令 / 备份 / 统计）
+    # ------------------------------------------------------------------
+    def _busy_guard(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.window.show_hint("正在生成回复，稍后再操作")
+            return True
+        return False
+
+    def _hist_index(self, ordinal):
+        from core import messagetools as _mt
+        mapped = _mt.map_ordinals(self.history, [int(ordinal)])
+        return mapped[0] if mapped else None
+
+    def _persist_history(self):
+        """把内存 history 写回当前会话，并重置映射，保证 UI 与存储一致。
+
+        v13.8：存储里只放非 system 消息；system 由 _load_current_session
+        运行时注入，避免历史数据在 store 里留下重复的 system 提示。
+        """
+        self.sessions.set_messages(
+            [m for m in self.history if m.get("role") != "system"],
+            session_id=self.sessions.current_id())
+        self._render_history()
+        self.window._update_status()
+
+    def delete_one_message(self, ordinal):
+        """右键删除单条：同步 history 与存储后立刻重绘。"""
+        if self._busy_guard():
+            return
+        i = self._hist_index(ordinal)
+        if i is None:
+            self.window.show_hint("没有找到要删除的消息")
+            return
+        self.history.pop(i)
+        self._persist_history()
+        self.window.show_hint("已删除该条消息（其余消息保留）")
+
+    def edit_one_message(self, ordinal):
+        """右键编辑单条文本。"""
+        if self._busy_guard():
+            return
+        from PyQt5.QtWidgets import QInputDialog
+        from core import messagetools as _mt
+        from core.sessions import message_text
+        i = self._hist_index(ordinal)
+        if i is None:
+            return
+        old = message_text(self.history[i])
+        text, ok = QInputDialog.getMultiLineText(
+            self.window, "编辑消息", "修改后保存（不会重新发送）：", old)
+        if not ok or text == old:
+            return
+        self.history[i] = _mt.edit_message_text(self.history[i], text)
+        self._persist_history()
+        self.window.show_hint("已保存修改")
+
+    def copy_one_message(self, ordinal):
+        from PyQt5.QtWidgets import QApplication
+        from core.sessions import message_text
+        i = self._hist_index(ordinal)
+        if i is None:
+            return
+        QApplication.clipboard().setText(message_text(self.history[i]))
+        self.window.show_hint("已复制该条消息")
+
+    def star_one_message(self, ordinal):
+        i = self._hist_index(ordinal)
+        if i is None:
+            return
+        sid = self.sessions.current_id()
+        stored = (self.sessions.get(sid) or {}).get("messages") or []
+        offset = len(self.history) - len(stored)
+        si = i - offset
+        state = self.sessions.toggle_star(sid, si)
+        self.window.show_hint("已收藏 ⭐" if state else "已取消收藏")
+
+    def open_find_in_chat(self):
+        """会话内查找（Ctrl+F）。"""
+        from PyQt5.QtWidgets import QInputDialog
+        from core import messagetools as _mt
+        q, ok = QInputDialog.getText(self.window, "查找消息", "关键词：")
+        if not ok or not (q or "").strip():
+            return
+        hits = _mt.search_messages(self.history, q)
+        if not hits:
+            self.window.show_hint("未找到「%s」" % q.strip())
+            return
+        lines = ["找到 %d 条：" % len(hits)]
+        for h in hits[:12]:
+            role = "🧑" if h["role"] == "user" else "✦"
+            lines.append("%s #%d  %s" % (role, h["ordinal"] + 1, h["snippet"]))
+        self.window.show_hint(chr(10).join(lines), 9000)
+
+    def show_message_stats(self):
+        from core import messagetools as _mt
+        st = _mt.message_stats(self.history)
+        self.window.show_hint(
+            "本对话：%d 条消息 · %d 字 · 约 %d tokens · 🧑%d / ✦%d" % (
+                st["visible"], st["chars"], st["tokens_estimate"],
+                st["roles"].get("user", 0), st["roles"].get("assistant", 0)),
+            6000)
+
+    def export_selected_messages(self):
+        from PyQt5.QtWidgets import QFileDialog
+        from core import messagetools as _mt
+        ords = self.window.selected_history_indices()
+        if not ords:
+            self.window.show_hint("请先进入「☑ 选择」并勾选消息")
+            return
+        md = _mt.export_messages(self.history, list(reversed(ords)),
+                                 title=self._session_title)
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "导出所选消息", "星语-所选消息.md",
+            "Markdown (*.md);;文本 (*.txt)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(md)
+        self.window.show_hint("已导出 %d 条消息：%s" % (len(ords), path), 6000)
+
+    def backup_sessions_now(self):
+        from core import messagetools as _mt
+        p = _mt.backup_sessions(self.sessions.path)
+        self.window.show_hint("已备份会话：%s" % (os.path.basename(p) if p else "失败"))
+        return p
+
+    def restore_sessions_now(self):
+        from PyQt5.QtWidgets import QInputDialog
+        from core import messagetools as _mt
+        items = [os.path.basename(p) for p in _mt.list_backups(self.sessions.path)]
+        if not items:
+            self.window.show_hint("暂无会话备份")
+            return
+        name, ok = QInputDialog.getItem(
+            self.window, "恢复会话备份", "选择备份：", items, 0, False)
+        if not ok:
+            return
+        full = next((p for p in _mt.list_backups(self.sessions.path)
+                     if os.path.basename(p) == name), None)
+        try:
+            n = _mt.restore_sessions(self.sessions.path, full)
+        except ValueError as e:
+            self.window.show_hint("恢复失败：%s" % e)
+            return
+        self.sessions._load()
+        self._sync_from_store(force=True)
+        self.window.show_hint("已恢复 %d 个会话" % n)
+
+    def _run_slash_command(self, cmd, args=""):
+        from core import messagetools as _mt
+        if cmd == "/clear":
+            self._clear_current_session()
+        elif cmd == "/new":
+            self._on_palette_command("new_session")
+        elif cmd == "/select":
+            self.window.set_selection_mode(True)
+            self.window.show_hint("已开启消息勾选")
+        elif cmd == "/find":
+            self.open_find_in_chat()
+        elif cmd == "/sessions":
+            self.open_sessions()
+        elif cmd == "/settings":
+            self.open_settings()
+        elif cmd == "/export":
+            self.export_conversation()
+        elif cmd == "/help":
+            self.window.show_hint(_mt.format_slash_help(), 9000)
+        else:
+            self.window.show_hint("未知命令：%s" % cmd)
+
     def _clear_current_session(self):
         """v13.7：清空**当前目标对话**的记录，不影响其它对话。
 
@@ -980,26 +1238,26 @@ class AssistantApp(QObject):
             self.window.show_hint("正在生成回复，稍后再清空")
             return
         sid = self.sessions.current_id()
-        before = list(self.sessions.list())
         system = [self.history[0]] if (self.history and
                                        self.history[0].get("role") == "system") else []
         if not system:
             system = [{"role": "system",
                        "content": self.skills.system_prompt_for()}]
         self.history = list(system)
-        ok, removed = self.sessions.clear_messages(sid, keep_system=True)
-        if not ok:
-            # 兜底：存储层没有该方法时用 set_messages 精确写目标会话
-            self.sessions.set_messages(list(self.history), session_id=sid)
-            removed = -1
+        # v13.8：统一以 history 为真源写回（只存非 system 消息），
+        # 不再调用 clear_messages 造成两处状态漂移。
+        self.sessions.set_messages([], session_id=sid)
         self._visible_hist_indices = []
         self.window.clear_messages()
         self.window.set_empty_hint("✅ 本对话记录已清空，输入消息开始新的一轮")
-        # 其它会话数量与 id 必须完全不变
-        after = list(self.sessions.list())
-        assert len(before) == len(after), "清空影响了会话列表"
-        self.window.show_hint("已清空当前对话%s" % (
-            "（移除 %d 条）" % removed if removed and removed > 0 else ""))
+        self.window._update_status()
+        try:
+            dlg = getattr(self, "_session_dialog", None)
+            if dlg is not None and dlg.isVisible():
+                dlg._reload()
+        except Exception:                            # noqa: BLE001
+            pass
+        self.window.show_hint("已清空当前对话（其它对话与会话列表保持不变）")
 
     # ------------------------------------------------------------------
     # 网关仪表盘（v6 旗舰界面）
@@ -1238,10 +1496,11 @@ class AssistantApp(QObject):
                 if bubble is not None and hasattr(bubble, "set_variants"):
                     bubble.set_variants(variants, msg["active"])
             self.history.append(msg)
-            self.sessions.append(msg)
             self.history = trim_history(
                 self.history, int(self.cfg.data.get("history_limit", 20)))
-            self.sessions.set_messages(list(self.history))
+            self.sessions.set_messages(
+                [m for m in self.history if m.get("role") != "system"],
+                session_id=self.sessions.current_id())
             # v8.0：从本轮对话启发式学习长期记忆，并让其即时生效（下一轮）
             last_user = next((message_text(m)
                               for m in reversed(self.history)
@@ -1432,7 +1691,11 @@ class AssistantApp(QObject):
         self.window.set_session_title(self._session_title)
 
     def _save_current_session(self):
-        self.sessions.set_messages(list(self.history))
+        # v13.8：显式锁定 session_id，且只存非 system 消息
+        # （system 由 _load_current_session 运行时注入，避免存储里出现两份）
+        self.sessions.set_messages(
+            [m for m in self.history if m.get("role") != "system"],
+            session_id=self.sessions.current_id())
         self._session_title = (self.sessions.current() or {}).get(
             "title") or self._session_title
 
@@ -1459,6 +1722,8 @@ class AssistantApp(QObject):
 
     def _on_session_selected(self, session_id):
         if session_id == self.sessions.current_id():
+            # v13.8：会话被删除后 store 已自动切换 current，此时仍需强制重绘
+            self._sync_from_store(force=True)
             return
         if self.worker is not None and self.worker.isRunning():
             self.window.show_hint("正在生成回复，稍后再切换会话")
@@ -1861,14 +2126,20 @@ class AssistantApp(QObject):
         box.setInformativeText("是否把当前模型切换为推荐模型？")
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         box.setDefaultButton(QMessageBox.No)
-        if box.exec_() != QMessageBox.Yes:
-            return
-        self.cfg.set_model(route["model"])
-        try:
-            self.models.reload_combo()
-        except Exception:                               # noqa: BLE001
-            pass
-        self.window.show_hint("🧠 已切换到：%s" % route["model"])
+        box.setWindowModality(Qt.NonModal)
+
+        def _apply(r, bx=box, model=route["model"]):
+            if bx.standardButton(bx.clickedButton()) != QMessageBox.Yes:
+                return
+            self.cfg.set_model(model)
+            try:
+                self.models.reload_combo()
+            except Exception:                           # noqa: BLE001
+                pass
+            self.window.show_hint("🧠 已切换到：%s" % model)
+        box.finished.connect(_apply)
+        box.show()
+        box.raise_()
 
     def toggle_auto_route(self):
         """开关「每轮自动按请求特征选模型」（默认关闭）。"""
@@ -2137,32 +2408,23 @@ class AssistantApp(QObject):
         if self.worker is not None and self.worker.isRunning():
             self.window.show_hint("正在生成回复，稍后再删除")
             return
-        mapping = getattr(self, "_visible_hist_indices", [])
-        hist_idx = sorted({mapping[i] for i in (bubble_indices or [])
-                           if isinstance(i, int) and 0 <= i < len(mapping)},
-                          reverse=True)
+        # v13.8：从当前 history 实时计算气泡序号 -> 真实索引。旧实现依赖
+        # _visible_hist_indices 缓存，流式回复气泡不更新 → 勾了却删错/删不掉。
+        from core import messagetools as _mt
+        hist_idx = _mt.map_ordinals(self.history, bubble_indices)
         if not hist_idx:
             self.window.show_hint("没有可删除的消息")
             return
-        sid = self.sessions.current_id()
-        # history 启动时可能比 sessions 多一条 system（_load_current_session
-        # 会补齐），因此两边索引要分别计算，否则会删错消息。
-        stored = (self.sessions.get(sid) or {}).get("messages") or []
-        offset = len(self.history) - len(stored)
-        store_idx = sorted({i - offset for i in hist_idx
-                            if 0 <= i - offset < len(stored)}, reverse=True)
-        if store_idx:
-            self.sessions.delete_messages(sid, store_idx)
-        else:
-            # 兜底：无法对齐时按删除后的 history 精确写回目标会话
-            kept = [m for _i, m in enumerate(self.history)
-                    if _i not in hist_idx and m.get("role") != "system"]
-            self.sessions.set_messages(kept, session_id=sid)
         for i in hist_idx:
             if 0 <= i < len(self.history):
                 del self.history[i]
+        # 统一以内存 history 为真源写回存储，避免双份索引错位
+        self.sessions.set_messages(
+            [m for m in self.history if m.get("role") != "system"],
+            session_id=self.sessions.current_id())
         self._render_history()
         self.window.set_selection_mode(False)
+        self.window._update_status()
         self.window.show_hint("已删除 %d 条所选消息（其余消息保留）" % len(hist_idx))
 
     def delete_last_message(self):
@@ -2177,10 +2439,9 @@ class AssistantApp(QObject):
             self.window.show_hint("没有可删除的消息")
             return
         removed = self.history.pop()
-        sid = self.sessions.current_id()
-        msgs = self.sessions.messages(sid)
-        if msgs:
-            self.sessions.delete_message(sid, len(msgs) - 1)
+        self.sessions.set_messages(
+            [m for m in self.history if m.get("role") != "system"],
+            session_id=self.sessions.current_id())
         self._session_title = (self.sessions.current() or {}).get(
             "title") or self._session_title
         self._render_history()

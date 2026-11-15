@@ -5146,6 +5146,62 @@ def test_v137_fixes():
           and "_INTERACTIVE" in cw)
 
 
+def test_v138_fixes():
+    """V13.8：删除即时生效 / 全气泡勾选 / 拖拽锁定 / 全窗口玻璃 / 新功能。"""
+    section("V13.8 · 对话一致性与交互完善")
+    import io as _io
+    import os as _os
+    import tempfile as _tf
+    import shutil as _sh
+    from core import messagetools as mt
+    from core.sessions import SessionStore
+
+    d = _tf.mkdtemp(prefix="starry_v138_st_")
+    try:
+        st = SessionStore(_os.path.join(d, "sessions.json"))
+        seen = []
+        st.add_listener(lambda rev: seen.append(rev))
+        sid = st.current_id()
+        st.append({"role": "user", "content": "A"}, session_id=sid)
+        st.append({"role": "assistant", "content": "B"}, session_id=sid)
+        check("写盘递增版本并通知订阅者", st.revision >= 2 and len(seen) >= 2)
+        st.set_messages([], session_id=sid)
+        check("清空后重载不复活",
+              SessionStore(st.path).get(sid)["messages"] == [])
+        h = [{"role": "system", "content": "sys"},
+             {"role": "user", "content": "你好"},
+             {"role": "assistant", "content": "你好呀"},
+             {"role": "user", "content": "Hello"}]
+        check("气泡序号实时映射", mt.rendered_indices(h) == [1, 2, 3]
+              and mt.map_ordinals(h, [1]) == [2])
+        check("会话内查找", len(mt.search_messages(h, "你好")) == 2)
+        check("消息统计", mt.message_stats(h)["visible"] == 3)
+        check("编辑不改原对象",
+              mt.edit_message_text(h[1], "改过")["content"] == "改过"
+              and h[1]["content"] == "你好")
+        check("斜杠命令", mt.parse_slash_command("/clear") == ("/clear", ""))
+        b = mt.backup_sessions(st.path)
+        check("会话备份生成", bool(b) and _os.path.isfile(b))
+        check("备份列表非空", len(mt.list_backups(st.path)) >= 1)
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+
+    cw = _io.open("ui/chat_window.py", encoding="utf-8").read()
+    ast_ = _io.open("app/assistant.py", encoding="utf-8").read()
+    gl = _io.open("ui/glass_dialog.py", encoding="utf-8").read()
+    mn = _io.open("main.py", encoding="utf-8").read()
+    check("拖拽按下锁定", "self._drag_active = True" in cw)
+    check("全气泡复选框", "_ensure_checks" in cw and "_bubble_ordinals" in cw)
+    check("会话变更自动同步", "add_listener(self._on_store_changed)" in ast_
+          and "_sync_from_store(force=True)" in ast_)
+    check("单一真源落盘", 'm.get("role") != "system"' in ast_)
+    check("全局二级窗口玻璃", "install_glass_hook" in gl
+          and "install_glass_hook(qt" in mn)
+    check("新功能入口", all(k in ast_ for k in
+          ("delete_one_message", "open_find_in_chat", "backup_sessions_now",
+           "_run_slash_command", "export_selected_messages")))
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AI 桌面助手")
@@ -5192,6 +5248,7 @@ def main():
     test_v1363_utf8_stream()
     test_v1365_layout()
     test_v137_fixes()
+    test_v138_fixes()
     test_v3_screenshots(app)
     print("\n==================================")
     print("结果：%d 通过，%d 失败" % (len(PASS), len(FAIL)))

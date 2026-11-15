@@ -86,6 +86,12 @@ class ChatWindow(QWidget):
     selection_mode_changed = pyqtSignal(bool)  # v13.7：消息勾选模式
     delete_selected_requested = pyqtSignal(list)  # v13.7：删除所选历史索引
     background_changed = pyqtSignal()          # v13.7：主窗口背景立即应用
+    delete_one_requested = pyqtSignal(int)    # v13.8：删除单条（气泡序号）
+    edit_one_requested = pyqtSignal(int)      # v13.8：编辑单条
+    copy_one_requested = pyqtSignal(int)      # v13.8：复制单条
+    star_one_requested = pyqtSignal(int)      # v13.8：收藏单条
+    find_requested = pyqtSignal()             # v13.8：会话内查找
+    slash_command = pyqtSignal(str)           # v13.8：斜杠命令
     closed = pyqtSignal()
 
     def __init__(self, config, parent=None):
@@ -105,11 +111,14 @@ class ChatWindow(QWidget):
         self._selection_mode = False
         self._msg_checks = []            # [(check, history_index, bubble)]
         self._open_children = []         # 非模态子窗口引用（防 GC）
+        self._drag_active = False        # v13.8：按下时锁定，移动中不再重复判定
         self.skills = SkillManager(config)
         self.market = PluginMarket(config)
         self._build_ui()
         self.apply_theme()
         self._restore_geometry()
+        # 欢迎页作为初始态；有历史会话时 AssistantApp.reveal() 会调用
+        # _render_history() → clear_messages() 将其清掉，不会混入消息流。
         self.show_welcome()
         self.setAcceptDrops(True)
 
@@ -371,6 +380,18 @@ class ChatWindow(QWidget):
         self.deep_btn.setCursor(Qt.PointingHandCursor)
         self.deep_btn.setFixedHeight(36)
         self.deep_btn.setToolTip("开启后优先选用推理模型（展示思考过程）")
+        self.select_msg_btn = QPushButton("☑")
+        self.select_msg_btn.setObjectName("FlatButton")
+        self.select_msg_btn.setToolTip("选择消息：勾选后批量删除，或右键单条消息")
+        self.select_msg_btn.setCursor(Qt.PointingHandCursor)
+        self.select_msg_btn.clicked.connect(self._toggle_selection_mode)
+        btn_row.addWidget(self.select_msg_btn)
+        self.find_btn = QPushButton("🔍")
+        self.find_btn.setObjectName("FlatButton")
+        self.find_btn.setToolTip("在当前对话中查找（Ctrl+F）")
+        self.find_btn.setCursor(Qt.PointingHandCursor)
+        self.find_btn.clicked.connect(self.find_requested.emit)
+        btn_row.addWidget(self.find_btn)
         self.deep_btn.toggled.connect(self.deep_thinking_requested)
         btn_row.addWidget(self.deep_btn)
 
@@ -445,6 +466,12 @@ class ChatWindow(QWidget):
         sc.activated.connect(self.screenshot_requested)
         sc2 = QShortcut(QKeySequence("Ctrl+Alt+D"), self)
         sc2.activated.connect(self.density_cycle_requested)
+        sc3 = QShortcut(QKeySequence("Ctrl+F"), self)
+        sc3.activated.connect(self.find_requested)
+        sc4 = QShortcut(QKeySequence("Ctrl+Shift+A"), self)
+        sc4.activated.connect(self._toggle_selection_mode)
+        sc5 = QShortcut(QKeySequence("Ctrl+Shift+X"), self)
+        sc5.activated.connect(lambda: self.set_selection_mode(False))
 
         # 统一按当前密度档位应用到全部栏目（也是即时切换的入口）
         self._apply_layout()
@@ -544,59 +571,118 @@ class ChatWindow(QWidget):
             self._del_selected_btn.setEnabled(n > 0)
             self._selection_info.setText("已选 %d 条" % n if n else "勾选要删除的消息")
 
-    def set_selection_mode(self, on):
-        """进入/退出消息勾选模式；on=True 时给每条消息加复选框。"""
-        self._selection_mode = bool(on)
-        for c, _i, _b in self._msg_checks:
+    def _bubble_ordinals(self):
+        """按布局顺序返回所有消息气泡及其序号（含流式回复气泡）。"""
+        out = []
+        for i in range(self.msg_layout.count()):
+            item = self.msg_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, (UserBubble, AssistantBubble)):
+                out.append((len(out), w))
+        return out
+
+    def _ensure_checks(self):
+        """v13.8：给**每一条**消息气泡挂复选框 + 单条操作按钮。
+
+        旧实现只给 _render_history/on_send 创建的气泡挂过复选框，流式回复
+        气泡没有 → 用户看不到勾选框。这里按布局顺序统一补齐并校准序号。
+        """
+        for ordinal, bubble in self._bubble_ordinals():
+            entry = next((e for e in self._msg_checks if e[2] is bubble), None)
+            if entry is None:
+                cb = QCheckBox("选择")
+                cb.setObjectName("MsgCheck")
+                cb.setFixedHeight(24)
+                cb.setToolTip("勾选后点「删除选中」；也可右键单条消息单独删除")
+                cb.setStyleSheet(
+                    "QCheckBox{spacing:4px;color:#5b7086;font-size:12px;}"
+                    "QCheckBox::indicator{width:18px;height:18px;}"
+                    "QCheckBox::indicator:checked{background:#3d8bfd;"
+                    "border:1px solid #2f6fd0;border-radius:4px;}")
+                cb.stateChanged.connect(self._update_selection_bar)
+                lay = bubble.layout()
+                if lay is not None:
+                    lay.insertWidget(0, cb)
+                else:
+                    cb.setParent(bubble)
+                    cb.move(4, 4)
+                entry = [cb, ordinal, bubble]
+                self._msg_checks.append(entry)
+            entry[1] = ordinal
             if self._selection_mode:
-                c.show()
+                entry[0].show()
             else:
-                c.setChecked(False)
-                c.hide()
+                entry[0].hide()
+        # 清理已销毁气泡的残留项
+        alive = {w for _o, w in self._bubble_ordinals()}
+        self._msg_checks = [e for e in self._msg_checks if e[2] in alive]
+
+    def set_selection_mode(self, on):
+        """进入/退出消息勾选模式；on=True 时确保每条消息都有复选框。"""
+        self._selection_mode = bool(on)
+        self._ensure_checks()
+        for cb, _i, _b in self._msg_checks:
+            if self._selection_mode:
+                cb.show()
+            else:
+                cb.setChecked(False)
+                cb.hide()
         self._update_selection_bar()
         self.selection_mode_changed.emit(self._selection_mode)
 
     def _attach_check(self, bubble, index):
-        """给气泡挂一个复选框（放到气泡自身布局首位，不改动消息内容）。"""
-        cb = QCheckBox("")
-        cb.setToolTip("勾选后点「删除选中」，仅删除所选消息")
-        if self._selection_mode:
-            cb.show()
+        """兼容旧调用：统一走 _ensure_checks 的同一套复选框。"""
+        entry = next((e for e in self._msg_checks if e[2] is bubble), None)
+        if entry is None:
+            self._ensure_checks()
         else:
-            cb.hide()
-        cb.stateChanged.connect(self._update_selection_bar)
-        lay = bubble.layout()
-        if lay is not None:
-            lay.insertWidget(0, cb)
-        else:
-            cb.setParent(bubble)
-            cb.move(4, 4)
-        self._msg_checks.append((cb, index, bubble))
+            entry[1] = int(index)
 
     def tag_last_message(self, index):
-        """把刚插入的气泡与 history 索引绑定，供勾选删除精确定位。"""
-        for i in range(self.msg_layout.count() - 1, -1, -1):
-            item = self.msg_layout.itemAt(i)
-            w = item.widget() if item else None
-            if isinstance(w, (UserBubble, AssistantBubble)):
-                tagged = any(b is w for _c, _i, b in self._msg_checks)
-                if not tagged:
-                    self._attach_check(w, index)
-                    return True
-        return False
+        """把刚插入的气泡与序号绑定（兼容旧调用；实际由 _ensure_checks 校准）。"""
+        ords = self._bubble_ordinals()
+        if not ords:
+            return False
+        o, bubble = ords[-1]
+        self._attach_check(bubble, o if index is None else index)
+        return True
+
+    def _bubble_context_menu(self, bubble, global_pos):
+        """v13.8：消息右键菜单 —— 复制 / 编辑 / 删除本条 / 收藏。"""
+        for ordinal, w in self._bubble_ordinals():
+            if w is bubble:
+                menu = QMenu(self)
+                a_copy = menu.addAction("📋 复制这条")
+                a_edit = menu.addAction("✏️ 编辑这条")
+                a_star = menu.addAction("⭐ 收藏/取消收藏")
+                menu.addSeparator()
+                a_del = menu.addAction("🗑 删除这条")
+                act = menu.exec_(global_pos)
+                if act is a_copy:
+                    self.copy_one_requested.emit(ordinal)
+                elif act is a_edit:
+                    self.edit_one_requested.emit(ordinal)
+                elif act is a_star:
+                    self.star_one_requested.emit(ordinal)
+                elif act is a_del:
+                    self.delete_one_requested.emit(ordinal)
+                return
+        return None
 
     def _toggle_selection_mode(self):
         self.set_selection_mode(not self._selection_mode)
-        self.show_hint("已开启消息勾选：勾选后点「删除选中」" if self._selection_mode
+        self.show_hint("已开启消息勾选：勾选后点「删除选中」，或右键单条消息" if self._selection_mode
                        else "已退出消息勾选")
 
     def _select_all_messages(self):
+        self._ensure_checks()
         any_unchecked = any(not c.isChecked() for c, _i, _b in self._msg_checks)
         for c, _i, _b in self._msg_checks:
             c.setChecked(any_unchecked)
         self._update_selection_bar()
 
     def _emit_delete_selected(self):
+        self._ensure_checks()
         idx = self.selected_history_indices()
         if idx:
             self.delete_selected_requested.emit(idx)
@@ -1131,21 +1217,18 @@ class ChatWindow(QWidget):
         return False
 
     def _drag_allowed(self, obj, e):
-        """标题栏 / 背景空白 / 状态栏等可拖；交互控件与其内部一律不拖。"""
+        """标题栏 / 背景空白 / 状态栏 / 气泡空白等均可拖；交互控件放行。
+
+        v13.8：只按「接收事件的控件本身」判定，不再用 widgetAt 在移动中反复
+        判断；否则鼠标一滑过按钮就断，表现为「只有特定位置能拖」。
+        """
         if not self._belongs_to_window(obj):
             return False
         if obj is getattr(self, "grip", None):
             return False
         if isinstance(obj, self._INTERACTIVE):
             return False
-        # 命中位置若压在交互控件上（例如容器事件冒泡），也不拖
-        try:
-            hit = QApplication.widgetAt(e.globalPos())
-        except Exception:                       # noqa: BLE001
-            hit = None
-        if hit is not None and hit is not obj and isinstance(hit, self._INTERACTIVE):
-            return False
-        # QLabel 若允许选中文本 / 含链接，交给它自己处理
+        # QLabel 若允许选中文本，交给它自己处理（气泡正文仍需可选中复制）
         if isinstance(obj, QLabel):
             flags = obj.textInteractionFlags()
             if flags & (Qt.TextSelectableByMouse | Qt.TextBrowserInteraction):
@@ -1178,16 +1261,35 @@ class ChatWindow(QWidget):
                 return True
 
         if t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
+            # v13.8：只在「按下」时判定一次并锁定。旧实现在 MouseMove 里反复
+            # 用 widgetAt 判定，鼠标滑过按钮/输入框就中断拖拽 → 只能拖特定位置。
             if self._drag_allowed(obj, e):
                 self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
+                self._drag_active = True
             else:
                 self._drag_pos = None
+                self._drag_active = False
         elif t == QEvent.MouseMove and (e.buttons() & Qt.LeftButton):
-            if self._drag_pos is not None and self._drag_allowed(obj, e):
+            if self._drag_active and self._drag_pos is not None:
                 self.move(e.globalPos() - self._drag_pos)
                 return True
         elif t == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
             self._drag_pos = None
+            self._drag_active = False
+
+        # v13.8：消息气泡右键菜单（复制 / 编辑 / 收藏 / 删除单条）
+        if t == QEvent.ContextMenu and obj is not None:
+            w = obj if isinstance(obj, (UserBubble, AssistantBubble)) else None
+            if w is None and isinstance(obj, QWidget):
+                cur = obj
+                for _ in range(4):
+                    cur = cur.parentWidget() if cur else None
+                    if isinstance(cur, (UserBubble, AssistantBubble)):
+                        w = cur
+                        break
+            if w is not None:
+                self._bubble_context_menu(w, e.globalPos())
+                return True
 
         if obj is self.messages_widget and t == QEvent.Resize:
             if self._stick_bottom:

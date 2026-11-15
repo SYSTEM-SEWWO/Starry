@@ -197,6 +197,14 @@ def main():
     _t_start = time.perf_counter()
     qt = QApplication(sys.argv)
     qt.setQuitOnLastWindowClosed(False)
+    # v13.8：所有二级窗口（设置 / 会话 / 缓存 / 关于 …）统一毛玻璃圆角。
+    # 全局 Show 钩子自动覆盖所有 QDialog，包括未来新增窗口。
+    try:
+        from ui.glass_dialog import install_glass_hook
+        from ui.theme import get_theme as _get_theme
+        install_glass_hook(qt, lambda: _get_theme("light"))
+    except Exception:                         # noqa: BLE001 - 装饰失败不影响启动
+        pass
     _t_qt = time.perf_counter()
 
     # 0) 企业商用合规：首次运行须同意 EULA（不同意则退出）

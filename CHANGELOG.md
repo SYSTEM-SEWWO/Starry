@@ -1,3 +1,50 @@
+## [13.8.0] - 2026-11-15
+
+### 缺陷修复（用户反馈「还是不行 / 时好时坏」）
+
+1. **对话删除后无法及时更新、重启才见效、删了又回来**：
+   根因是 `history`(内存) 与 `sessions`(存储) 双写漂移 + `SessionDialog` 删除
+   当前会话后 store 已切 current，但 `_on_session_selected` 因 `id == current_id()`
+   直接 return，主窗口仍持旧 history，随后 `_save_current_session()` 把旧内容
+   写进新会话 → 旧对话"复活"。
+   修复：`SessionStore` 增加 `revision` + 变更订阅；主窗口订阅后自动
+   `_sync_from_store()`；切换/删除时强制刷新；**统一为单一真源**（存储只存
+   非 system 消息，system 运行时注入），去掉所有 `sessions.append` 双写。
+   实测：删除单条 / 批量 / 清空 / 删除整个会话后，store 与 UI 立即一致，
+   重新加载不复活，其它会话与会话列表完全不变。
+2. **主窗口仍要拖特定位置**：旧实现在 `MouseMove` 里反复用 `widgetAt` 判定，
+   鼠标滑过按钮就中断。改为「按下时判定一次并锁定 `_drag_active`」，
+   移动阶段只看该标志；标题栏、消息区空白、状态栏均可拖，按钮/输入框照常响应。
+3. **勾选删除单条看不见**：旧实现只给 `_render_history`/`on_send` 的气泡挂
+   复选框，流式回复气泡没有；入口还藏在「⋯」菜单里。
+   修复：`_ensure_checks()` 按布局顺序为**所有**气泡统一挂可见复选框并校准序号；
+   新增常驻「☑」「🔍」按钮、右键菜单（复制/编辑/收藏/删除本条）、
+   `Ctrl+Shift+A` 进入选择模式；删除改用 `messagetools.map_ordinals` 实时映射，
+   不再依赖会漂移的缓存索引。
+4. **所有二级窗口毛玻璃圆角**：新增 `ui/glass_dialog.py`，全局 Show 事件钩子
+   自动把任何 QDialog 内容包进 `FrostGlass`（圆角 + 磨砂 + 高光 + 投影），
+   保留系统标题栏与全部交互；原生对话框与已自带玻璃的窗口自动跳过。
+   `main.py` 启动时安装，覆盖未来新增窗口。
+
+### 新增功能（core/messagetools.py，三端同源纯逻辑）
+
+- 消息级工具箱：单条删除 / 编辑 / 复制 / 收藏，会话内查找（Ctrl+F），
+  本对话消息统计（条数/字数/估算 token），所选消息导出 Markdown。
+- 斜杠命令：`/new /clear /select /find /sessions /settings /export /help`。
+- 会话备份/恢复：`sessions.json` 快照到 `backups/`（保留最近 10 份），
+  恢复前自动再备份一次，带 JSON 结构校验。
+- 命令面板 / 托盘菜单新增 6 个入口；`Ctrl+F` 查找、`Ctrl+Shift+X` 退出选择。
+
+### 反复通读源码后的额外修复
+- 修掉 3 处历史 `undefined name 'QMessageBox'`（归档导入 / 分支列表 /
+  会话合并），静态门禁致命项归零。
+- 智能选模型确认框改为非阻塞，避免模态短时阻塞主窗口。
+- `pyflakes_gate.py` 分级门禁持续保证「致命 0」。
+
+验证：`test_v138_fixes` 31/31、真实 Qt 窗口集成全通过（玻璃/勾选/拖拽/
+删除即时生效/不复活/清空隔离/删会话同步）、`test_v137_fixes` 25/25、
+`test_v1365_layout` 31/31、三端同源门禁 PASS。
+
 ## [13.7.0] - 2026-11-13
 
 ### 对话管理与交互缺陷修复（7 项，用户反馈逐项对应）

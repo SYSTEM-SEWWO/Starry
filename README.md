@@ -28,7 +28,7 @@
 | **兼容范围 / 配置项 / 异常边界** | [Hub 兼容契约](docs/HUB兼容范围与配置_v13_2.md) |
 | **401 排查 / 企业部署** | [企业级运维与故障排查](docs/企业级运维与故障排查_v13_2.md) |
 | **提交到 GitHub / 发布 Release** | [GitHub 提交与 Release 发布流程](docs/GitHub_提交与Release发布流程.md)；一键脚本 `scripts/git_push.sh` / `scripts/github_release.sh` |
-| **多平台 Release 资产** | [v13.8.0 Release](https://github.com/SYSTEM-SEWWO/Starry/releases/tag/v13.8.0)：Windows GUI EXE / Debian `.deb` / macOS / Linux / Android-Termux 包 + `SHA256SUMS` |
+| **多平台 Release 资产** | [v13.8.0 Release](https://github.com/SYSTEM-SEWWO/Starry/releases/tag/v13.8.0)：Windows GUI EXE / Debian `.deb` / macOS / Linux / Android-Termux 包 + `SHA256SUMS-13.8.0.txt` |
 
 | **删除/编辑/查找单条消息** | 输入框旁常驻 `☑`（勾选批量删）与 `🔍`（Ctrl+F 查找）；右键单条消息可复制/编辑/收藏/删除；`/help` 查看斜杠命令 |
 | **所有二级窗口毛玻璃圆角** | v13.8 起设置、会话、缓存、关于等所有子窗口自动套圆角磨砂玻璃 + 投影，与主窗口一致 |

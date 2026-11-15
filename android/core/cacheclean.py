@@ -40,7 +40,22 @@ PROTECTED_PATH_PARTS = {"cache_backup", "browser", "models", "bin",
                         "profile", "userdata"}
 
 # 允许清理的文件后缀（其余一律不碰）
-CLEANABLE_EXTS = {".pyc", ".tmp", ".log", ".jsonl"}
+CLEANABLE_EXTS = {".pyc", ".tmp", ".log", ".jsonl", ".bak"}
+
+# v13.9：旧备份文件（config.json.bak_* / sessions.json.bak-* 等）是用户
+# 数据目录里最容易堆积、又最该清掉的内容；以前完全没进扫描规则。
+BACKUP_SUFFIXES = (".bak", ".bak-", ".bak_")
+
+
+def is_stale_backup(name):
+    """是否是配置/会话等文件的历史备份（明确排除受保护文件名本身）。"""
+    low = name.lower()
+    if low in PROTECTED_BASENAMES:
+        return False
+    return (".bak" in low and
+            any(low.endswith(ext) for ext in (".json", ".jsonl", ".tmp", ".log"))) \
+        or low.startswith(("config.json.bak", "sessions.json.bak",
+                           "memory.json.bak", "stats.json.bak"))
 
 # config.json 内的「软缓存」键：清理就是把它们清空后写回（config.json 本身不动）
 CONFIG_CACHE_KEYS = ("model_cache", "market_cache", "hub_cache",
@@ -56,7 +71,22 @@ SCAN_RULES = (
      "本地日志文本文件；不含 API Key 明文（诊断信息已脱敏）。", True),
     ("apilog", "API 审计日志", "data", {".jsonl"},
      "STARRY_API_LOG 开启后产生的 JSONL 诊断记录，可随时重新生成。", True),
+    ("stale_backups", "历史配置备份", "data", {".bak"},
+     "config.json.bak_* / sessions.json.bak-* 等历史备份；保留最近 3 份，其余可清理。", True),
 )
+
+
+def project_root():
+    """v13.9：可靠推断项目根目录，不再依赖 os.getcwd()。
+
+    EXE 启动时 cwd 常是桌面/系统目录，旧实现会扫错地方 → 用户觉得「清不掉」。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)                 # core/ 的上一级
+    if os.path.isdir(os.path.join(root, "core")) or \
+            os.path.isfile(os.path.join(root, "main.py")):
+        return root
+    return os.path.abspath(os.getcwd())
 
 
 def _norm(path):
@@ -95,7 +125,8 @@ def _collect(root, exts, max_files=5000):
         dirs[:] = [d for d in dirs if d not in PROTECTED_PATH_PARTS
                    and not d.startswith(".")]
         for f in files:
-            if os.path.splitext(f)[1].lower() not in exts:
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in exts and not (".bak" in f.lower() and ".bak" in exts):
                 continue
             p = os.path.join(cur, f)
             if os.path.islink(p):
@@ -113,12 +144,20 @@ def scan(data_dir=None, project_dir=None, cfg=None):
     调用方必须先展示给用户确认，再调用 clean()。绝不在此函数里删任何东西。
     """
     data_dir = os.path.abspath(data_dir or get_config_dir())
-    project_dir = os.path.abspath(project_dir or os.getcwd())
+    project_dir = os.path.abspath(project_dir or project_root())
     items = []
     for cid, category, root_kind, exts, desc, default in SCAN_RULES:
         root = project_dir if root_kind == "project" else data_dir
         files = [p for p in _collect(root, exts)
                  if not _is_protected(p, data_dir, project_dir)]
+        if cid == "stale_backups":
+            # 只清 .bak 类文件；按时间保留最近 3 份，避免误删最新备份
+            files = [p for p in files if is_stale_backup(os.path.basename(p))]
+            files = sorted(files, key=lambda x: os.path.getmtime(x),
+                           reverse=True)[3:] if len(files) > 3 else []
+        elif cid == "pycache":
+            # 运行中的 Python 会立刻重建 .pyc，明确标注避免「清了又回来」误解
+            desc = (desc + " 注意：程序运行时 Python 会自动重建，属正常现象。")
         size = 0
         for p in files:
             try:
@@ -194,7 +233,7 @@ def clean(items, data_dir=None, project_dir=None, cfg=None,
     dry_run=True 时只做全部校验与统计，**不删除、不写回**。
     """
     data_dir = os.path.abspath(data_dir or get_config_dir())
-    project_dir = os.path.abspath(project_dir or os.getcwd())
+    project_dir = os.path.abspath(project_dir or project_root())
     ts = now or time.strftime("%Y%m%d_%H%M%S")
     backup_dir = os.path.join(data_dir, "cache_backup", ts)
     report = {"cleaned": [], "failed": [], "freed_bytes": 0,
@@ -207,8 +246,10 @@ def clean(items, data_dir=None, project_dir=None, cfg=None,
         if not it.get("selected", it.get("default_selected", False)):
             continue
         for p in it.get("files") or []:
-            if not _is_protected(p, data_dir, project_dir) \
-                    and os.path.splitext(p)[1].lower() in CLEANABLE_EXTS:
+            ext = os.path.splitext(p)[1].lower()
+            ok_ext = ext in CLEANABLE_EXTS or \
+                (is_stale_backup(os.path.basename(p)))
+            if not _is_protected(p, data_dir, project_dir) and ok_ext:
                 pending.append(p)
             else:
                 report["failed"].append((p, "被安全规则拒绝"))
@@ -236,10 +277,9 @@ def clean(items, data_dir=None, project_dir=None, cfg=None,
                 report["cleaned"].append(p)
                 report["freed_bytes"] += size
             except Exception as e:           # noqa: BLE001
+                # v13.9：单个文件失败（被占用/只读）不再中断整批，
+                # 继续清理其余文件；旧实现一失败就 return，表现为「清不掉」。
                 report["failed"].append((p, str(e)[:120]))
-                if not dry_run:
-                    report["backup_dir"] = backup_dir if backup else ""
-                    return report            # 失败即停，避免扩大影响
 
     # 3) config.json 内软缓存：先备份整个 config.json，再清空缓存键写回
     keys = report["config_keys"]
@@ -262,7 +302,7 @@ def clean(items, data_dir=None, project_dir=None, cfg=None,
 def restore(backup_dir, data_dir=None, project_dir=None, batch_size=10):
     """从备份目录恢复被清理的文件（撤销）。返回 (恢复数, 错误列表)。"""
     data_dir = os.path.abspath(data_dir or get_config_dir())
-    project_dir = os.path.abspath(project_dir or os.getcwd())
+    project_dir = os.path.abspath(project_dir or project_root())
     restored, errors = 0, []
     if not backup_dir or not os.path.isdir(backup_dir):
         return 0, ["备份目录不存在"]

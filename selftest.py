@@ -5202,6 +5202,47 @@ def test_v138_fixes():
            "_run_slash_command", "export_selected_messages")))
 
 
+def test_v139_fixes():
+    """V13.9：二级窗口白屏 / 缓存清不掉 / 悬浮球小表情。"""
+    section("V13.9 · 白屏修复与缓存清理")
+    import io as _io, os as _os, tempfile as _tf, shutil as _sh
+    from core import cacheclean as cc
+    g = _io.open("ui/glass_dialog.py", encoding="utf-8").read()
+    body = g.split("def apply_glass(", 1)[-1].split("def install_glass_hook", 1)[0]
+    check("玻璃不再摘取原布局", "takeAt(" not in body)
+    check("玻璃不再二次 setLayout", "setLayout(" not in body)
+    check("玻璃不改窗口透明度", "WA_TranslucentBackground" not in body)
+    check("玻璃背景层鼠标穿透", "WA_TransparentForMouseEvents" in g)
+    check("玻璃背景层 resize 跟随", "_fit_backdrop" in g)
+    root = cc.project_root()
+    check("项目根可靠推断", _os.path.isfile(_os.path.join(root, "main.py")), root)
+    d = _tf.mkdtemp(prefix="starry_v139_st_")
+    try:
+        proj = _os.path.join(d, "proj"); data = _os.path.join(d, "data")
+        _os.makedirs(_os.path.join(proj, "core", "__pycache__")); _os.makedirs(data)
+        for k in range(5):
+            open(_os.path.join(data, "config.json.bak_%d" % k), "w").write("x")
+        open(_os.path.join(data, "left.tmp"), "wb").write(b"t")
+        items = cc.scan(data_dir=data, project_dir=proj, cfg=None)
+        bak = next((i for i in items if i["id"] == "stale_backups"), None)
+        check("新增历史备份类别且保留 3 份", bak is not None and bak["count"] == 2)
+        for it in items:
+            it["selected"] = True
+        bad = dict(items[0]); bad["files"] = ["no-such.pyc"] + bad["files"]
+        rep = cc.clean([bad] + items[1:], data_dir=data, project_dir=proj,
+                       cfg=None, backup=True)
+        check("坏文件不中断整批", len(rep["cleaned"]) >= 2 and rep["failed"])
+        check("tmp 确实删除", not _os.path.isfile(_os.path.join(data, "left.tmp")))
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+    moods = _io.open("ui/ball_moods.py", encoding="utf-8").read()
+    ball = _io.open("ui/floating_ball.py", encoding="utf-8").read()
+    check("悬浮球 8 种表情", all(m in moods for m in
+          ("blink", "smile", "surprise", "sleepy", "love", "tilt", "wave", "yawn")))
+    check("悬浮球微动作", "offsets" in moods and "p.rotate" in ball)
+    check("一键缓存清理", "_quick_clean" in _io.open("ui/cache_dialog.py", encoding="utf-8").read())
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AI 桌面助手")
@@ -5249,6 +5290,7 @@ def main():
     test_v1365_layout()
     test_v137_fixes()
     test_v138_fixes()
+    test_v139_fixes()
     test_v3_screenshots(app)
     print("\n==================================")
     print("结果：%d 通过，%d 失败" % (len(PASS), len(FAIL)))

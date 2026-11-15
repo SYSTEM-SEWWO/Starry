@@ -302,6 +302,15 @@ class FloatingBall(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(self.FPS_MS)
 
+        # v13.9：不定时小表情 / 小动作
+        try:
+            from ui.ball_moods import MoodController
+            cfg = getattr(parent, "cfg", None)
+            on = True if cfg is None else bool(cfg.data.get("ball_moods", True))
+            self._moods = MoodController(self, enabled=on)
+        except Exception:                        # noqa: BLE001
+            self._moods = None
+
         self._menu = self._build_menu()
         self._update_tooltip()
 
@@ -542,6 +551,19 @@ class FloatingBall(QWidget):
         cx, cy = w / 2.0, h / 2.0
         r_base = min(w, h) / 2.0 - 4
 
+        # v13.9：表情动作（上下浮动 / 摇摆 / 弹性缩放）
+        moods = getattr(self, "_moods", None)
+        dx = dy = rot = 0.0
+        mscale = 1.0
+        if moods is not None:
+            dx, dy, rot, mscale = moods.offsets()
+        if dx or dy or rot or mscale != 1.0:
+            p.save()
+            p.translate(cx + dx, cy + dy)
+            p.rotate(rot)
+            p.scale(mscale, mscale)
+            p.translate(-cx, -cy)
+
         # 综合缩放：入场弹跳 × 悬停放大
         s = self._ease_out_back(self._entrance) * self._hover_scale
         r = r_base * s
@@ -606,6 +628,32 @@ class FloatingBall(QWidget):
 
         # ---------- 四角星 ----------
         self._draw_sparkle(p, cx, cy, r_body * 0.5)
+
+        # ---------- v13.9 小表情 ----------
+        if moods is not None and moods.mood:
+            try:
+                from ui.ball_moods import draw_mood
+                p.save()
+                p.translate(dx, dy)
+                draw_mood(p, cx, cy, r_body, moods)
+                p.restore()
+            except Exception:                   # noqa: BLE001
+                pass
+        if dx or dy or rot or mscale != 1.0:
+            p.restore()
+
+    def trigger_mood(self, mood=None):
+        """手动触发一个小表情（命令面板 / 托盘 / 设置页）。"""
+        m = getattr(self, "_moods", None)
+        if m is not None:
+            m.trigger(mood)
+            return True
+        return False
+
+    def set_moods_enabled(self, on):
+        m = getattr(self, "_moods", None)
+        if m is not None:
+            m.set_enabled(on)
 
     def _paint_aurora(self, p, cx, cy, r_base):
         """v7.1 待机极光弧：一道锥形渐变弧环绕球体缓慢旋转（生命感）"""

@@ -1,22 +1,27 @@
 # -*- coding: utf-8 -*-
-"""v13.8：所有二级窗口（设置 / 会话 / 缓存 / 关于等）统一毛玻璃圆角。
+"""v13.9：所有二级窗口统一毛玻璃圆角（白屏修复版）。
 
-低侵入、可反复调用、绝不破坏原有布局与交互：
+v13.8 的致命缺陷（用户反馈「2 级子窗口全部白屏、无法交互」）：
 
-* ``apply_glass(dlg, theme=None)`` 把对话框已有布局里的**全部条目**搬进一个
-  ``FrostGlass`` 圆角底板（真实磨砂模糊 + 顶部高光 + 1px 亮边 + 投影），
-  原有控件、布局、信号、按钮盒全部保留，所有权不发生转移冲突。
-* 保留系统标题栏与原生关闭/移动能力（不设 FramelessWindowHint），因此
-  ``exec_()``、Esc、QDialogButtonBox 等既有行为零回归。
-* 已经自带玻璃（关于 / EULA / 网关）或原生对话框（QMessageBox /
-  QFileDialog / QColorDialog / QInputDialog）跳过，避免二次包裹。
-* ``install_glass_hook(app, theme_getter)`` 在 QApplication 上装 Show 事件
-  过滤器，任何 QDialog 首次显示时自动应用 —— 覆盖未来新增的窗口。
+* ``FrostGlass.__init__`` **自带一个 QVBoxLayout**，旧实现又调用
+  ``glass.setLayout(inner)``，Qt 会直接忽略并打印
+  ``QWidget::setLayout: Attempting to set QLayout ... which already has a layout``；
+  更糟的是旧实现先用 ``old.takeAt(0)`` 把原布局条目**全部摘走**，
+  结果这些控件不属于任何布局 → 尺寸为 0 / 位置错乱 → 白屏。
+* 旧实现还给有系统标题栏的 QDialog 设置 ``WA_TranslucentBackground`` +
+  ``QDialog{background:transparent}``，Windows 下会让整个窗口连同内容透明。
+
+本版原则（保守、可验证、绝不破坏交互）：
+
+1. **完全不动原有布局**：只把 ``FrostGlass`` 作为背景层插入，
+   ``lower()`` 到所有兄弟控件之下，并在 resize 时铺满；原布局与控件原封不动。
+2. **不改 windowFlags、不设 WA_TranslucentBackground、不覆盖 QDialog 背景 QSS**；
+   圆角与磨砂由 FrostGlass 自身的 ``paintEvent`` 绘制。
+3. 跳过原生对话框（QMessageBox / QFileDialog / …）与已自带玻璃的窗口。
+4. ``install_glass_hook`` 在 QApplication 上装 Show/Resize 事件过滤器，幂等。
 """
 from PyQt5.QtCore import Qt, QEvent, QObject
-from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (QDialog, QGraphicsDropShadowEffect, QVBoxLayout,
-                             QMessageBox, QFileDialog, QColorDialog,
+from PyQt5.QtWidgets import (QDialog, QMessageBox, QFileDialog, QColorDialog,
                              QInputDialog, QProgressDialog)
 
 from ui.frost import FrostGlass
@@ -27,87 +32,82 @@ _SKIP_TYPES = (QMessageBox, QFileDialog, QColorDialog, QInputDialog,
                QProgressDialog)
 
 
+class _Backdrop(FrostGlass):
+    """只做背景绘制的 FrostGlass 子类：不吃鼠标、不抢焦点、不拦截子控件。"""
+
+    def __init__(self, parent):
+        super().__init__(parent, radius=_RADIUS)
+        self.setObjectName("GlassBackdrop")
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.lower()
+
+    def mousePressEvent(self, e):
+        e.ignore()
+
+    def mouseMoveEvent(self, e):
+        e.ignore()
+
+    def _grab(self):
+        """背景层是子控件：``frameGeometry()`` 是相对父窗口的坐标，
+        直接抓屏会抓到屏幕左上角错误区域。这里强制使用无屏依赖的
+        faux 渐变玻璃（与主窗口 offscreen 降级路径一致），视觉统一且零风险。
+        """
+        self._bg = None
+        self._faux = True
+        self.update()
+
+
 class _GlassInstaller(QObject):
-    """全局 Show 事件过滤：任何 QDialog 首次显示即套玻璃。"""
+    """全局 Show/Resize 事件过滤：任何 QDialog 首次显示即套玻璃。"""
 
     def __init__(self, theme_getter=None, parent=None):
         super().__init__(parent)
         self._theme_getter = theme_getter
+        self._watched = set()
 
     def eventFilter(self, obj, e):
-        if e.type() == QEvent.Show and isinstance(obj, QDialog):
-            try:
+        try:
+            if not isinstance(obj, QDialog):
+                return False
+            if e.type() == QEvent.Show:
                 t = self._theme_getter() if self._theme_getter else None
-                apply_glass(obj, t)
-            except Exception:                   # noqa: BLE001 - 绝不影响窗口显示
-                pass
+                if apply_glass(obj, t):
+                    self._watched.add(id(obj))
+            elif e.type() == QEvent.Resize and id(obj) in self._watched:
+                _fit_backdrop(obj)
+        except Exception:                   # noqa: BLE001 - 绝不影响窗口显示
+            pass
         return False
 
 
+def _fit_backdrop(dlg):
+    bd = dlg.findChild(_Backdrop, "GlassBackdrop")
+    if bd is not None:
+        bd.setGeometry(0, 0, dlg.width(), dlg.height())
+        bd.lower()
+
+
 def apply_glass(dlg, theme=None):
-    """把对话框内容包进圆角毛玻璃底板；幂等，可重复调用。返回是否应用。"""
+    """给对话框加圆角毛玻璃背景；**不改动任何原有布局/控件**。返回是否应用。"""
     if not isinstance(dlg, QDialog) or isinstance(dlg, _SKIP_TYPES):
         return False
     if getattr(dlg, _GLASS_FLAG, False):
         return False
-    old = dlg.layout()
-    if old is None:
-        return False
-    if dlg.findChild(FrostGlass) is not None:
-        # 已有自己的毛玻璃（关于 / EULA / 网关）→ 只补投影，不二次包裹
-        setattr(dlg, _GLASS_FLAG, True)
-        _add_shadow(dlg.findChild(FrostGlass))
-        return True
-
     setattr(dlg, _GLASS_FLAG, True)
+    if dlg.findChild(FrostGlass) is not None:
+        return True                      # 关于/EULA/网关已自带玻璃
 
-    # 1) 逐项摘出原有布局内容（所有权清晰，不触发 Qt 的 layout 冲突）
-    items = []
-    while old.count():
-        it = old.takeAt(0)
-        if it is not None:
-            items.append(it)
-    margins = old.contentsMargins()
-    spacing = old.spacing()
-
-    # 2) 对话框本身透明，留出投影空间
-    dlg.setAttribute(Qt.WA_TranslucentBackground, True)
-    dlg.setStyleSheet(
-        (dlg.styleSheet() or "") +
-        "\nQDialog{background:transparent;border:none;}"
-        "\nQDialog > FrostGlass{border-radius:%dpx;}" % _RADIUS)
-    old.setContentsMargins(10, 10, 10, 12)
-    old.setSpacing(0)
-
-    # 3) 圆角毛玻璃底板
-    glass = FrostGlass(dlg, radius=_RADIUS)
-    glass.setObjectName("FrostHost")
-    inner = QVBoxLayout()
-    inner.setContentsMargins(margins)
-    inner.setSpacing(spacing)
-    for it in items:
-        inner.addItem(it)
-    glass.setLayout(inner)
-    old.addWidget(glass)
-    _add_shadow(glass)
-
+    bd = _Backdrop(dlg)
+    bd.setGeometry(0, 0, dlg.width(), dlg.height())
+    bd.lower()
     if theme is not None:
         try:
-            glass.apply_theme(theme)
-        except Exception:                       # noqa: BLE001
+            bd.apply_theme(theme)
+        except Exception:                   # noqa: BLE001
             pass
+    bd.show()
     return True
-
-
-def _add_shadow(widget):
-    try:
-        eff = QGraphicsDropShadowEffect(widget)
-        eff.setBlurRadius(24)
-        eff.setColor(QColor(0, 0, 0, 96))
-        eff.setOffset(0, 3)
-        widget.setGraphicsEffect(eff)
-    except Exception:                           # noqa: BLE001
-        pass
 
 
 def install_glass_hook(app, theme_getter=None):

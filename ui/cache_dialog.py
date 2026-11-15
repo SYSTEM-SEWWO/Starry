@@ -12,6 +12,8 @@ v13.7 缺陷修复：旧版在 UI 线程同步执行 scan()/clean()（遍历整�
     提示，不会禁用），进度实时刷新；
   * 成功、失败、异常都通过信号回到主线程，finally 恢复全部按钮与状态。
 """
+import os
+
 from PyQt5.QtCore import Qt, QUrl, QThread, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -119,6 +121,12 @@ class CacheDialog(QDialog):
         self.clean_btn = QPushButton("清理选中（先备份）")
         self.clean_btn.clicked.connect(self._clean)
         bar.addWidget(self.clean_btn)
+        self.rescan_btn.setToolTip("重新扫描（.pyc 会在程序运行时自动重建）")
+        # v13.9：一键清理，跳过逐项二次确认（仍先备份、仍遵守安全白名单）
+        self.quick_btn = QPushButton("⚡ 一键清理")
+        self.quick_btn.setToolTip("按当前勾选立即清理，仍先备份且只删白名单内的可再生成文件")
+        self.quick_btn.clicked.connect(self._quick_clean)
+        bar.insertWidget(2, self.quick_btn)
         self.close_btn = QPushButton("关闭")
         self.close_btn.clicked.connect(self.reject)
         bar.addWidget(self.close_btn)
@@ -164,8 +172,22 @@ class CacheDialog(QDialog):
         else:
             self._last_backup = (result or {}).get("backup_dir") or ""
             self.backup_btn.setEnabled(bool(self._last_backup))
-            self._msg("清理完成", cc.format_report(result))
-            self._scan()
+            cleaned = len((result or {}).get("cleaned") or [])
+            failed = (result or {}).get("failed") or []
+            # v13.9：明确显示实际删除数，不再立刻重扫把结果冲掉
+            # （.pyc 运行时会重建，旧实现一重扫就像「没清掉」）
+            note = ("\n\n注意：Python 字节码缓存会在程序运行时自动重建，"
+                    "重新扫描仍看到 .pyc 属正常现象，不是清理失败。")
+            if failed:
+                note += "\n\n未处理 %d 项（被占用 / 权限 / 安全规则）：" % len(failed)
+                note += "".join("\n  · %s：%s" % (os.path.basename(str(p)), str(e)[:60])
+                                for p, e in failed[:5])
+            self._msg("清理完成", "实际删除 %d 个文件%s%s" % (
+                cleaned, cc.format_report(result), note))
+            self.summary.setText(
+                "✅ 已删除 %d 项 · 失败 %d 项 · 备份：%s" % (
+                    cleaned, len(failed),
+                    "可撤销" if self._last_backup else "无"))
 
     def _on_worker_failed(self, mode, error):
         label = {"scan": "扫描", "dry": "试运行", "clean": "清理"}.get(mode, mode)
@@ -234,6 +256,14 @@ class CacheDialog(QDialog):
             self.summary.setText("请先勾选要清理的类别")
             return
         self._start_worker("dry", sel)
+
+    def _quick_clean(self):
+        """一键清理：仍先备份、仍走安全白名单，只是省略确认弹窗。"""
+        sel = [i for i in self._selected() if i["selected"]]
+        if not sel:
+            self.summary.setText("请先勾选要清理的类别")
+            return
+        self._start_worker("clean", sel)
 
     def _clean(self):
         sel = [i for i in self._selected() if i["selected"]]

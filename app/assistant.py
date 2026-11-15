@@ -186,6 +186,12 @@ class AssistantApp(QObject):
 
         ap = self.cfg.appearance
         self.ball = FloatingBall(size=int(ap.get("ball_size", 56)))
+        # v13.9：悬浮球无 parent，构造后显式同步「小表情」开关
+        try:
+            self.ball.set_moods_enabled(
+                bool(self.cfg.data.get("ball_moods", True)))
+        except Exception:                        # noqa: BLE001
+            pass
         self.ball.set_theme(ap.get("theme"))
         self.window = ChatWindow(self.cfg)
         # 独立控制器：模型管理 / 截图流程
@@ -377,6 +383,7 @@ class AssistantApp(QObject):
         menu.addAction("🔍 查找对话内容 (Ctrl+F)", self.open_find_in_chat)
         menu.addAction("📊 本对话消息统计", self.show_message_stats)
         menu.addAction("💾 备份全部会话", self.backup_sessions_now)
+        menu.addAction("😊 让悬浮球做个表情", lambda: self.ball.trigger_mood())
         menu.addAction("↺ 恢复推荐布局", self.window.reset_layout)
         menu.addAction("🛰 网关仪表盘", self.open_gateway)
         menu.addAction("关于 星语", self.open_about)
@@ -663,6 +670,10 @@ class AssistantApp(QObject):
              "在当前对话内按关键词查找消息（Ctrl+F）", "对话"),
             ("message_stats", "📊", "本对话消息统计",
              "条数 / 字数 / 估算 token / 角色分布", "对话"),
+            ("ball_mood", "😊", "让悬浮球做个表情",
+             "随机眨眼 / 微笑 / 惊讶 / 困倦等小动画", "外观"),
+            ("ball_moods_toggle", "🎭", "开关悬浮球小表情",
+             "开启/关闭不定时的小表情与小动作", "外观"),
             ("backup_sessions", "💾", "备份全部会话",
              "把 sessions.json 快照到 backups/ 目录（保留最近 10 份）", "文件"),
             ("restore_sessions", "♻️", "恢复会话备份",
@@ -821,6 +832,15 @@ class AssistantApp(QObject):
             self.open_find_in_chat()
         elif cid == "message_stats":
             self.show_message_stats()
+        elif cid == "ball_mood":
+            self.ball.trigger_mood()
+            self.window.show_hint("悬浮球：%s" % "来点小表情 ✦")
+        elif cid == "ball_moods_toggle":
+            on = not bool(self.cfg.data.get("ball_moods", True))
+            self.cfg.data["ball_moods"] = on
+            self.cfg.save()
+            self.ball.set_moods_enabled(on)
+            self.window.show_hint("悬浮球小表情已%s" % ("开启" if on else "关闭"))
         elif cid == "backup_sessions":
             self.backup_sessions_now()
         elif cid == "restore_sessions":
@@ -3095,6 +3115,11 @@ class AssistantApp(QObject):
             self.ball.close()
             self.ball.deleteLater()
             self.ball = FloatingBall(size=new_size)
+            try:
+                self.ball.set_moods_enabled(
+                    bool(self.cfg.data.get("ball_moods", True)))
+            except Exception:                    # noqa: BLE001
+                pass
             self.ball.set_theme(theme)
             self.ball.move(pos)
             self.ball.set_state(state)

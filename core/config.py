@@ -16,7 +16,7 @@ import tempfile
 
 APP_ID = "ai-desktop-assistant"
 APP_NAME = "星语 · Starry"
-APP_VERSION = "13.9.0"
+APP_VERSION = "14.0.0"
 
 # ---------------------------------------------------------------------------
 # 内置提供商预设（全部为 OpenAI 兼容 /chat/completions 接口，Ollama 亦兼容）

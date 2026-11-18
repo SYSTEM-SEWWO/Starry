@@ -26,7 +26,7 @@ import threading
 import time
 
 PROTOCOL_VERSION = "2024-11-05"
-CLIENT_INFO = {"name": "星语Starry", "version": "13.9.0"}
+CLIENT_INFO = {"name": "星语Starry", "version": "14.0.0"}
 DEFAULT_TIMEOUT = 15.0
 
 

@@ -1,13 +1,13 @@
 # 星语 · Starry
 
-> **当前版本：v13.9.0** · 跨平台本地优先 AI 助手（PyQt5 桌面 / Toga 安卓 / CLI / Windows CLI+GUI EXE / Linux deb）
+> **当前版本：v14.0.0** · 跨平台本地优先 AI 助手（PyQt5 桌面 / Toga 安卓 / CLI / Windows CLI+GUI EXE / Linux deb）
 > 本页下半部分是 v7 → v13.5 的完整历史编年史；**首屏为当前版本导航**。
 
-## ⚡ 当前版本速览（v13.9.0）
+## ⚡ 当前版本速览（v14.0.0）
 
 | 想做什么 | 去哪里 |
 | --- | --- |
-| **直接双击运行（新版根目录产物）** | 根目录 `星语Starry-GUI-v13.9.0.exe`（+ `.sha256`）；历代 EXE 在 `releases/` |
+| **直接双击运行（新版根目录产物）** | 根目录 `星语Starry-GUI-v14.0.0.exe`（+ `.sha256`）；历代 EXE 在 `releases/` |
 | **模型改不了 / 默认 LM Studio** | 设置 → 模型：空模型引导 + 错配一键修正；CLI `starry --model-diagnose` |
 | **发图片报 HTTP 400 / 让助手看图** | 带图自动切视觉模型；本机无视觉模型时本地忽略图片并提示，不再 400 |
 | **界面拥挤 / 上下栏太紧** | 设置 → 外观 → **栏目密度**（紧凑/标准/宽松/超宽松，即时生效）；`Ctrl+Alt+D` 循环切换；`↺ 恢复推荐布局` 一键放大；CLI `starry --ui-layout` 诊断 |
@@ -28,7 +28,7 @@
 | **兼容范围 / 配置项 / 异常边界** | [Hub 兼容契约](docs/HUB兼容范围与配置_v13_2.md) |
 | **401 排查 / 企业部署** | [企业级运维与故障排查](docs/企业级运维与故障排查_v13_2.md) |
 | **提交到 GitHub / 发布 Release** | [GitHub 提交与 Release 发布流程](docs/GitHub_提交与Release发布流程.md)；一键脚本 `scripts/git_push.sh` / `scripts/github_release.sh` |
-| **多平台 Release 资产** | [v13.9.0 Release](https://github.com/SYSTEM-SEWWO/Starry/releases/tag/v13.9.0)：Windows GUI EXE / Debian `.deb` / macOS / Linux / Android-Termux 包 + `SHA256SUMS-13.9.0.txt` |
+| **多平台 Release 资产** | [v14.0.0 Release](https://github.com/SYSTEM-SEWWO/Starry/releases/tag/v14.0.0)：Windows GUI EXE / Debian `.deb` / macOS / Linux / Android-Termux 包 + `SHA256SUMS-14.0.0.txt` |
 
 | **删除/编辑/查找单条消息** | 输入框旁常驻 `☑`（勾选批量删）与 `🔍`（Ctrl+F 查找）；右键单条消息可复制/编辑/收藏/删除；`/help` 查看斜杠命令 |
 | **所有二级窗口毛玻璃圆角** | v13.8 起设置、会话、缓存、关于等所有子窗口自动套圆角磨砂玻璃 + 投影，与主窗口一致 |
@@ -44,18 +44,18 @@
 > `scripts/build_macos.sh` / `build_linux.sh` / `build_android.sh apk` 构建。
 > 本地一键生成：`python scripts/build_release_assets.py`。
 
-## 🚀 如何使用（v13.9.0）
+## 🚀 如何使用（v14.0.0）
 
 ### 1) 直接运行（Windows，最省事）
 
-双击根目录 **`星语Starry-GUI-v13.9.0.exe`**。首次启动会解压 10–30 秒属正常。
-**状态栏右下角会显示 `v13.9.0 · 布局宽松`** —— 用它确认你跑的是新版；若显示旧版本号，说明打开的是旧 EXE（历代文件都在 `releases/` 子目录）。
+双击根目录 **`星语Starry-GUI-v14.0.0.exe`**。首次启动会解压 10–30 秒属正常。
+**状态栏右下角会显示 `v14.0.0 · 布局宽松`** —— 用它确认你跑的是新版；若显示旧版本号，说明打开的是旧 EXE（历代文件都在 `releases/` 子目录）。
 
 > 默认服务商 `lmstudio`（本地优先，无需 API Key）。若 LM Studio 未启动，点右上角 ⚙ 检查 Base URL / 模型。
 
 ### 2) 布局太挤怎么办（本轮重点）
 
-旧版 `config.json` 里保存了 `430×640` 的窗口尺寸，会**覆盖**代码里的新布局，所以「改了却看不到变化」。v13.9.0 首次启动会**自动一次性迁移**到 `620×860`，之后你手动拖的尺寸不再被覆盖。
+旧版 `config.json` 里保存了 `430×640` 的窗口尺寸，会**覆盖**代码里的新布局，所以「改了却看不到变化」。v14.0.0 首次启动会**自动一次性迁移**到 `620×860`，之后你手动拖的尺寸不再被覆盖。
 
 | 方式 | 操作 |
 | --- | --- |
@@ -109,7 +109,7 @@ bash scripts/github_release.sh 13.6.5
 python main.py
 ```
 
-若项目放在含中文的目录，v13.9.0 起 `main.py` 会自动把 Qt 平台插件复制到纯英文临时路径，避免 `no Qt platform plugin could be initialized` 弹窗；直接双击 EXE 则完全不受影响。
+若项目放在含中文的目录，v14.0.0 起 `main.py` 会自动把 Qt 平台插件复制到纯英文临时路径，避免 `no Qt platform plugin could be initialized` 弹窗；直接双击 EXE 则完全不受影响。
 
 | **真实 GUI 测评证据** | [真实 GUI 测评报告](docs/真实GUI测评报告_v13_2.md)（`docs/evidence_v13_2/`） |
 | GUI 桌面版 EXE | [Windows GUI EXE 指南](docs/使用指南_Windows_GUI_EXE_v13_1.md) |

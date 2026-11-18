@@ -17,14 +17,16 @@ def check(name, cond, extra=""):
 
 def test_glass_source():
     g = io.open("ui/glass_dialog.py", encoding="utf-8").read()
-    # 只取 apply_glass 函数体（历史缺陷说明写在模块 docstring 里，不应算作代码）
+    # v14.0：方案升级为真圆角无边框窗口（复用 FrostGlass 自带 layout）
     body = g.split("def apply_glass(", 1)[-1].split("def install_glass_hook", 1)[0]
-    check("不再摘取原布局条目", "takeAt(" not in body)
-    check("不再二次 setLayout", "setLayout(" not in body)
-    check("不改窗口透明度", "WA_TranslucentBackground" not in body)
-    check("不覆盖 QDialog 背景 QSS", "background:transparent" not in body)
-    check("背景层鼠标穿透", "WA_TransparentForMouseEvents" in g)
-    check("背景层随 resize 铺满", "_fit_backdrop" in g and "QEvent.Resize" in g)
+    code = "\n".join(ln for ln in body.splitlines()
+                      if not ln.lstrip().startswith("#") and "``" not in ln)
+    check("复用自带 layout（不摘空条目）", "glass.layout()" in code)
+    check("不再二次 setLayout", "setLayout(" not in code)
+    check("真圆角：无边框 + 透明", "FramelessWindowHint" in code
+          and "WA_TranslucentBackground" in code)
+    check("自定义标题栏可拖动", "_GlassTitle" in g and "mouseMoveEvent" in g)
+    check("投影", "QGraphicsDropShadowEffect" in code)
     check("原生对话框跳过", "QMessageBox" in g and "_SKIP_TYPES" in g)
     check("已自带玻璃窗口跳过", "findChild(FrostGlass)" in g)
     check("幂等", "_GLASS_FLAG" in g)

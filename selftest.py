@@ -5138,7 +5138,8 @@ def test_v137_fixes():
     cd = _io.open("ui/cache_dialog.py", encoding="utf-8").read()
     ast_ = _io.open("app/assistant.py", encoding="utf-8").read()
     cw = _io.open("ui/chat_window.py", encoding="utf-8").read()
-    check("缓存清理改为后台线程", "class _CacheWorker(QThread)" in cd)
+    check("缓存清理无线程崩溃风险", "class _CacheWorker" not in cd
+          and "def _run_sync" in cd)
     check("缓存失败也恢复交互", "_on_worker_failed" in cd)
     check("子窗口统一非模态", "def _show_child" in ast_
           and "setWindowModality(Qt.NonModal)" in ast_)
@@ -5209,11 +5210,13 @@ def test_v139_fixes():
     from core import cacheclean as cc
     g = _io.open("ui/glass_dialog.py", encoding="utf-8").read()
     body = g.split("def apply_glass(", 1)[-1].split("def install_glass_hook", 1)[0]
-    check("玻璃不再摘取原布局", "takeAt(" not in body)
-    check("玻璃不再二次 setLayout", "setLayout(" not in body)
-    check("玻璃不改窗口透明度", "WA_TranslucentBackground" not in body)
-    check("玻璃背景层鼠标穿透", "WA_TransparentForMouseEvents" in g)
-    check("玻璃背景层 resize 跟随", "_fit_backdrop" in g)
+    code = "\n".join(ln for ln in body.splitlines()
+                      if not ln.lstrip().startswith("#") and "``" not in ln)
+    check("复用 FrostGlass 自带 layout", "glass.layout()" in code)
+    check("不二次 setLayout", "setLayout(" not in code)
+    check("真圆角无边框透明", "FramelessWindowHint" in code
+          and "WA_TranslucentBackground" in code)
+    check("自定义标题栏可拖动", "_GlassTitle" in g and "mouseMoveEvent" in g)
     root = cc.project_root()
     check("项目根可靠推断", _os.path.isfile(_os.path.join(root, "main.py")), root)
     d = _tf.mkdtemp(prefix="starry_v139_st_")
@@ -5241,6 +5244,28 @@ def test_v139_fixes():
           ("blink", "smile", "surprise", "sleepy", "love", "tilt", "wave", "yawn")))
     check("悬浮球微动作", "offsets" in moods and "p.rotate" in ball)
     check("一键缓存清理", "_quick_clean" in _io.open("ui/cache_dialog.py", encoding="utf-8").read())
+
+
+def test_v140_fixes():
+    """V14.0：真圆角玻璃窗口 / 缓存清理零崩溃 / 悬浮球表情。"""
+    section("V14.0 · 二级窗口与缓存清理根治")
+    import io as _io
+    g = _io.open("ui/glass_dialog.py", encoding="utf-8").read()
+    body = g.split("def apply_glass(", 1)[-1].split("def install_glass_hook", 1)[0]
+    code = "\n".join(ln for ln in body.splitlines()
+                      if not ln.lstrip().startswith("#") and "``" not in ln)
+    check("复用 FrostGlass 自带 layout", "glass.layout()" in code)
+    check("不二次 setLayout", "setLayout(" not in code)
+    check("真圆角无边框透明", "FramelessWindowHint" in code
+          and "WA_TranslucentBackground" in code)
+    d = _io.open("ui/cache_dialog.py", encoding="utf-8").read()
+    check("去掉 QThread 杜绝崩溃", "class _CacheWorker" not in d)
+    check("去掉 QMessageBox 杜绝崩溃", "QMessageBox(" not in d)
+    check("同步清理闭环", "def _run_sync" in d and "self._run_sync(\"clean\", sel)" in d)
+    check("对话框内二次确认", "_on_clean_clicked" in d and "_pending_clean" in d)
+    m = _io.open("ui/ball_moods.py", encoding="utf-8").read()
+    check("悬浮球 8 种表情", all(x in m for x in
+          ("blink","smile","surprise","sleepy","love","tilt","wave","yawn")))
 
 
 def main():
@@ -5291,6 +5316,7 @@ def main():
     test_v137_fixes()
     test_v138_fixes()
     test_v139_fixes()
+    test_v140_fixes()
     test_v3_screenshots(app)
     print("\n==================================")
     print("结果：%d 通过，%d 失败" % (len(PASS), len(FAIL)))

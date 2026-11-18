@@ -1,7 +1,19 @@
-# 星语 Starry · 当前版发布说明 v13.9.0
+# 星语 Starry · 当前版发布说明 v14.0.0
 
-**主题**：修复二级窗口白屏、彻底解决「缓存清不掉」，新增悬浮球
-不定时小表情与一键缓存清理。
+**主题**：二级窗口改为**真圆角无边框毛玻璃**（不再是白窗），
+缓存清理的 native 崩溃根治，悬浮球小表情保持可用。
+
+## v14.0.0 逐项确认
+
+| # | 反馈 | 修复与实测 |
+| --- | --- | --- |
+| 1 | 二级窗口不是圆角、风格不对、白屏 | 复用 FrostGlass 自带 layout（杜绝 v13.8 白屏根因）+ 无边框透明 + 自定义标题栏 + 投影；实测控件在 glass 内、按钮可点、圆角 18、设置/缓存窗均正常 |
+| 2 | 缓存清不掉 | faulthandler 抓到 QThread.wait() 与 QMessageBox.show() 两处 native 崩溃；改同步清理 + 对话框内确认/反馈；实测 3 文件全删、备份可撤销、零崩溃 |
+| 3 | 悬浮球小表情 | 8 种表情 + 微动作、12–28 秒随机、开关与手动入口，保持 |
+| 4 | 反复通读优化 | 修确认回调碰自毁 box、清理结果明确化、历史 lint 等；静态门禁致命 0 |
+| 5 | 自主提交与 Release | 源码已提交推送、tag v14.0.0，资产含 Windows EXE / DEB / macOS / Linux / Android |
+
+
 
 ## v13.9.0 逐项确认
 
@@ -164,7 +176,7 @@ starry --model-diagnose
 
 | 平台 | 资产 |
 | --- | --- |
-| **Windows GUI（本版）** | `星语Starry-GUI-v13.9.0.exe`（根目录 + `releases/`） |
+| **Windows GUI（本版）** | `星语Starry-GUI-v14.0.0.exe`（根目录 + `releases/`） |
 | 校验和 | `星语Starry-GUI-v13.9.0.exe.sha256` / `releases/SHA256SUMS-13.9.0.txt` |
 | 历史版本 | 根目录 `...v13.3.0` … `...v13.6.5` 均保留（另见 `releases/`） |
 
@@ -178,7 +190,7 @@ starry --model-diagnose
   （minicpm5-1b+图片不再带图、池含视觉模型自动切换、已是视觉模型不切走、无图场景不受影响）。
 - **v13.6.3 新增「SSE 中文乱码」回归（chat_stream / chat_agent_stream 共 5 断言）全 PASS**
   （无 charset 场景中文逐字正确、无 `ä½`/`å¥½` 乱码；显式 utf-8 头也正确）。
-- `starry_cli.py --version` → `星语 Starry 13.9.0（命令行版）`。
+- `starry_cli.py --version` → `星语 Starry 14.0.0（命令行版）`。
 - 说明：本环境对长时进程有 ~17s 上限，导致 `selftest.py` 完整跑批被中断；上述断言已用
   独立 harness 分段验证全部通过，非代码回归。
 - EXE 冒烟 / SHA-256 复算 / PYZ 模块核对见「产物核验」章节。

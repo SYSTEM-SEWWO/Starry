@@ -1,3 +1,29 @@
+## [14.0.0] - 2026-11-18
+
+### 二级窗口真圆角玻璃 + 缓存清理崩溃根治
+
+1. **二级窗口圆角风格不对 / 白屏 / 无交互**（用户再次反馈）
+   上轮 `_Backdrop` 背景层方案虽不白屏，但被 QSS 不透明控件盖住，
+   视觉上仍是方形白窗。本轮改为**真圆角无边框窗口**：复用
+   `FrostGlass` **自带的 QVBoxLayout**（绝不二次 setLayout），把原布局
+   条目逐项搬入；`FramelessWindowHint` + `WA_TranslucentBackground` +
+   自定义可拖动标题栏 + 投影。实测：标题栏 / 标签页 / 布局全在 glass
+   内、尺寸正常、按钮可点击、圆角 18、无白屏。设置窗 / 缓存窗均验证。
+2. **缓存清理「总清不掉」**（真实根因用 faulthandler 抓到）
+   `_CacheWorker(QThread)` 挂在 QDialog 下，`wait()` 触发 native
+   Segmentation Fault；去掉 QThread 改**同步执行**（数据量极小 < 50ms），
+   又发现 `QMessageBox.show()` 在玻璃父窗口下 access violation →
+   **彻底移除 QMessageBox**（结果改为对话框内状态栏 + tooltip），
+   二次确认改为「再点一次确认」。实测端到端：3 个文件全删、备份可撤销、
+   装/不装 glass hook 均零崩溃。
+3. 保留 v13.9 的 `project_root()`、`.bak` 旧备份类别、`.pyc` 自动重建说明、
+   ⚡ 一键清理；确认回调改为只用 `finished` 的 result，不碰自毁的 box。
+4. **悬浮球不定时小表情**：8 种表情 + 微动作 + 12–28 秒随机触发 +
+   开关 + 命令面板 / 托盘入口，保持不变。
+
+验证：`test_v140_fixes` 23/23、`test_v139_fixes` 29/29、真实 Qt 玻璃与
+清理闭环全通过、三端同源门禁 PASS。
+
 ## [13.9.0] - 2026-11-15
 
 ### 白屏根因修复（用户反馈「2 级子窗口全部只卡在白屏、无法交互」）

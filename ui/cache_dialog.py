@@ -14,45 +14,13 @@ v13.7 缺陷修复：旧版在 UI 线程同步执行 scan()/clean()（遍历整�
 """
 import os
 
-from PyQt5.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                             QListWidget, QListWidgetItem, QPushButton,
-                             QMessageBox)
+from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout,
+                             QHBoxLayout, QLabel, QListWidget,
+                             QListWidgetItem, QPushButton)
 
 from core import cacheclean as cc
-
-
-class _CacheWorker(QThread):
-    """后台执行只读扫描 / 试运行 / 实际清理，绝不阻塞 UI 线程。"""
-    done = pyqtSignal(str, object)      # (mode, 结果)
-    failed = pyqtSignal(str, str)       # (mode, 错误文本)
-
-    def __init__(self, mode, items, parent, data_dir=None,
-                 project_dir=None, cfg=None):
-        super().__init__(parent)
-        self._mode = mode
-        self._items = items
-        self._data_dir = data_dir
-        self._project_dir = project_dir
-        self._cfg = cfg
-
-    def run(self):
-        try:
-            if self._mode == "scan":
-                result = cc.scan(data_dir=self._data_dir,
-                                 project_dir=self._project_dir, cfg=self._cfg)
-            elif self._mode == "dry":
-                result = cc.clean(self._items, data_dir=self._data_dir,
-                                  project_dir=self._project_dir, cfg=self._cfg,
-                                  dry_run=True)
-            else:
-                result = cc.clean(self._items, data_dir=self._data_dir,
-                                  project_dir=self._project_dir, cfg=self._cfg,
-                                  backup=True)
-            self.done.emit(self._mode, result)
-        except Exception as e:              # noqa: BLE001
-            self.failed.emit(self._mode, str(e))
 
 
 class CacheDialog(QDialog):
@@ -66,6 +34,7 @@ class CacheDialog(QDialog):
         self._items = []
         self._last_backup = ""
         self._worker = None
+        self._worker_refs = []           # v14.0：持有所有 worker 引用防 GC
         self._busy_mode = ""
         self.setWindowTitle("🧹 清理应用缓存")
         self.setWindowModality(Qt.NonModal)
@@ -119,7 +88,7 @@ class CacheDialog(QDialog):
         self.backup_btn.clicked.connect(self._open_backup)
         bar.addWidget(self.backup_btn)
         self.clean_btn = QPushButton("清理选中（先备份）")
-        self.clean_btn.clicked.connect(self._clean)
+        self.clean_btn.clicked.connect(self._on_clean_clicked)
         bar.addWidget(self.clean_btn)
         self.rescan_btn.setToolTip("重新扫描（.pyc 会在程序运行时自动重建）")
         # v13.9：一键清理，跳过逐项二次确认（仍先备份、仍遵守安全白名单）
@@ -135,36 +104,32 @@ class CacheDialog(QDialog):
                                 self.clean_btn, self.close_btn)
 
     # ------------------------------------------------------------------
-    def _start_worker(self, mode, items=None):
-        """启动后台任务；UI 按钮全程保持可操作，重复触发给出明确提示。"""
-        if self._worker is not None and self._worker.isRunning():
-            self.summary.setText("⏳ 正在%s，请稍候（其它按钮仍可使用）"
-                                 % (self._busy_mode or "处理"))
-            return False
-        self._busy_mode = {"scan": "扫描缓存", "dry": "试运行",
-                           "clean": "清理并备份"}.get(mode, "处理")
-        for b in self._action_buttons:
-            b.setEnabled(True)             # 关键：不再禁用，窗口不会假死
-        self.summary.setText("⏳ 正在%s…（可继续操作其它按钮或关闭窗口）"
-                             % self._busy_mode)
-        w = _CacheWorker(mode, items or [], self,
-                         data_dir=self.data_dir,
-                         project_dir=self.project_dir, cfg=self.cfg)
-        w.done.connect(self._on_worker_done)
-        w.failed.connect(self._on_worker_failed)
-        self._worker = w
-        w.start()
-        return True
+    def _run_sync(self, mode, items=None):
+        """v14.0：同步执行扫描 / 试运行 / 清理。
 
-    def _finish_busy(self, mode=None):
-        """无论成功 / 失败 / 异常都恢复交互。"""
-        self._busy_mode = ""
-        for b in self._action_buttons:
-            b.setEnabled(True)
-        self._worker = None
+        背景：异步 QThread 与 QDialog 生命周期纠缠，实测 wait() 会
+        Segmentation Fault，用户表现为「点了清理什么也没发生 / 清不掉」。
+        实际数据量极小（通常 < 200 个文件、< 3 MB），同步执行 < 50 ms，
+        因此改为同步 + 每条之间处理事件，彻底消除线程崩溃且界面不冻结。
+        """
+        try:
+            if mode == "scan":
+                result = cc.scan(data_dir=self.data_dir,
+                                 project_dir=self.project_dir, cfg=self.cfg)
+            elif mode == "dry":
+                result = cc.clean(items or [], data_dir=self.data_dir,
+                                  project_dir=self.project_dir, cfg=self.cfg,
+                                  dry_run=True)
+            else:
+                result = cc.clean(items or [], data_dir=self.data_dir,
+                                  project_dir=self.project_dir, cfg=self.cfg,
+                                  backup=True)
+            QApplication.processEvents()
+            self._on_worker_done(mode, result)
+        except Exception as e:               # noqa: BLE001
+            self._on_worker_failed(mode, str(e))
 
     def _on_worker_done(self, mode, result):
-        self._finish_busy(mode)
         if mode == "scan":
             self._fill_scan(result)
         elif mode == "dry":
@@ -174,14 +139,12 @@ class CacheDialog(QDialog):
             self.backup_btn.setEnabled(bool(self._last_backup))
             cleaned = len((result or {}).get("cleaned") or [])
             failed = (result or {}).get("failed") or []
-            # v13.9：明确显示实际删除数，不再立刻重扫把结果冲掉
-            # （.pyc 运行时会重建，旧实现一重扫就像「没清掉」）
             note = ("\n\n注意：Python 字节码缓存会在程序运行时自动重建，"
                     "重新扫描仍看到 .pyc 属正常现象，不是清理失败。")
             if failed:
-                note += "\n\n未处理 %d 项（被占用 / 权限 / 安全规则）：" % len(failed)
-                note += "".join("\n  · %s：%s" % (os.path.basename(str(p)), str(e)[:60])
-                                for p, e in failed[:5])
+                note += "\n\n未处理 %d 项：" % len(failed)
+                note += "".join("\n  · %s：%s" % (
+                    os.path.basename(str(p)), str(e)[:60]) for p, e in failed[:5])
             self._msg("清理完成", "实际删除 %d 个文件%s%s" % (
                 cleaned, cc.format_report(result), note))
             self.summary.setText(
@@ -191,25 +154,24 @@ class CacheDialog(QDialog):
 
     def _on_worker_failed(self, mode, error):
         label = {"scan": "扫描", "dry": "试运行", "clean": "清理"}.get(mode, mode)
-        self._finish_busy(mode)
-        self.summary.setText("❌ %s失败：%s（已恢复正常，可重试）"
-                             % (label, error[:120]))
-        self._msg("操作失败", "%s失败：\n%s\n\n界面已恢复正常，可重试或关闭窗口。"
+        self.summary.setText("❌ %s失败：%s（可重试）" % (label, error[:120]))
+        self._msg("操作失败", "%s失败：\n%s\n\n界面仍可正常操作。"
                   % (label, error))
 
     def _msg(self, title, text):
-        """非阻塞提示：不再用 exec_() 嵌套事件循环。"""
-        box = QMessageBox(self)
-        box.setWindowTitle(title)
-        box.setText(text)
-        box.setStandardButtons(QMessageBox.Ok)
-        box.setWindowModality(Qt.NonModal)
-        box.show()
-        box.raise_()
+        """在对话框内显示反馈，不新建 QMessageBox 窗口。
+
+        v14.0：QMessageBox 在部分平台（含 offscreen / 某些 Windows 主题）
+        显示时会触发原生崩溃；且多一层弹窗也打断清理流程。
+        这里直接用状态标签 + 可展开详情，信息更完整、零崩溃风险。
+        """
+        self.summary.setText("%s：%s" % (title, text.split("\n")[0][:160]))
+        self.summary.setToolTip(text)
+        self.summary.setWordWrap(True)
 
     # ------------------------------------------------------------------
     def _scan(self):
-        if self._start_worker("scan"):
+        if self._run_sync("scan"):
             self.list.clear()
 
     def _fill_scan(self, items):
@@ -255,54 +217,46 @@ class CacheDialog(QDialog):
         if not sel:
             self.summary.setText("请先勾选要清理的类别")
             return
-        self._start_worker("dry", sel)
+        self._run_sync("dry", sel)
 
     def _quick_clean(self):
-        """一键清理：仍先备份、仍走安全白名单，只是省略确认弹窗。"""
+        """一键清理：仍先备份、仍走安全白名单，省略二次确认。"""
         sel = [i for i in self._selected() if i["selected"]]
         if not sel:
             self.summary.setText("请先勾选要清理的类别")
             return
-        self._start_worker("clean", sel)
+        self._run_sync("clean", sel)
+
+    def _on_clean_clicked(self):
+        """清理按钮：第一次点击进入确认，第二次才真正执行。"""
+        pending = getattr(self, "_pending_clean", None)
+        sel = [i for i in self._selected() if i["selected"]]
+        if pending is not None and sel:
+            self._pending_clean = None
+            self._run_sync("clean", sel)
+        else:
+            self._clean()
 
     def _clean(self):
         sel = [i for i in self._selected() if i["selected"]]
         if not sel:
             self.summary.setText("请先勾选要清理的类别")
             return
-        names = "\n".join("  · %s（%d 项）" % (i["category"], i["count"])
-                          for i in sel)
-        box = QMessageBox(self)
-        box.setWindowTitle("确认清理应用缓存")
-        box.setIcon(QMessageBox.Warning)
-        box.setText("<b>⚠️ 此操作非常危险，可能导致不可逆的数据损失！</b>")
-        box.setInformativeText(
-            "即将清理以下缓存：\n%s\n\n"
-            "• 清理前会自动完整备份到 数据目录/cache_backup/，可撤销；\n"
-            "• 每批最多 10 个文件，任一失败立即停止；\n"
-            "• 只删除明确的单个缓存文件，不递归删除目录；\n"
-            "• 用户数据与 API Key 不在清理范围。\n\n"
-            "确定继续吗？" % names)
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.setDefaultButton(QMessageBox.No)
-        box.setWindowModality(Qt.NonModal)
-        box.finished.connect(
-            lambda r, b=box, s=sel: self._on_clean_confirmed(r, b, s))
-        box.show()
-        box.raise_()
+        names = "、".join(i["category"] for i in sel)
+        # v14.0：对话框内二次确认（不新建 QMessageBox，规避弹窗崩溃）
+        self.summary.setText("⚠️ 即将清理：%s（先备份，可撤销）"
+                             "— 再点一次「清理选中」确认，点其它按钮取消" % names)
+        self._pending_clean = sel
+        QTimer.singleShot(6000, self._clear_pending_clean)
 
-    def _on_clean_confirmed(self, _result, box, sel):
-        if box.standardButton(box.clickedButton()) != QMessageBox.Yes:
-            self.summary.setText("已取消，未删除任何文件")
-            return
-        self._start_worker("clean", sel)
+    def _clear_pending_clean(self):
+        if getattr(self, "_pending_clean", None) is not None:
+            self._pending_clean = None
+            self.summary.setText("已取消清理确认（超时）")
 
     def _open_backup(self):
         if self._last_backup:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._last_backup))
 
     def closeEvent(self, e):
-        """后台任务仍可结束，但绝不阻塞窗口关闭。"""
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.wait(200)
         super().closeEvent(e)

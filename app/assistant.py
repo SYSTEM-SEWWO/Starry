@@ -2149,7 +2149,8 @@ class AssistantApp(QObject):
         box.setWindowModality(Qt.NonModal)
 
         def _apply(r, bx=box, model=route["model"]):
-            if bx.standardButton(bx.clickedButton()) != QMessageBox.Yes:
+            # v14.0：finished 回调里 clickedButton() 已失效，用 result 判定
+            if int(r) != int(QMessageBox.Yes):
                 return
             self.cfg.set_model(model)
             try:

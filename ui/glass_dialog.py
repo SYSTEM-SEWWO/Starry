@@ -21,8 +21,11 @@ v13.8 的致命缺陷（用户反馈「2 级子窗口全部白屏、无法交互
 4. ``install_glass_hook`` 在 QApplication 上装 Show/Resize 事件过滤器，幂等。
 """
 from PyQt5.QtCore import Qt, QEvent, QObject
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QDialog, QMessageBox, QFileDialog, QColorDialog,
-                             QInputDialog, QProgressDialog)
+                             QInputDialog, QProgressDialog, QFrame,
+                             QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
+                             QPushButton)
 
 from ui.frost import FrostGlass
 
@@ -32,81 +35,120 @@ _SKIP_TYPES = (QMessageBox, QFileDialog, QColorDialog, QInputDialog,
                QProgressDialog)
 
 
-class _Backdrop(FrostGlass):
-    """只做背景绘制的 FrostGlass 子类：不吃鼠标、不抢焦点、不拦截子控件。"""
+class _GlassTitle(QFrame):
+    """无边框二级窗口的可拖动标题栏（标题 + 关闭）。"""
 
-    def __init__(self, parent):
-        super().__init__(parent, radius=_RADIUS)
-        self.setObjectName("GlassBackdrop")
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setFocusPolicy(Qt.NoFocus)
-        self.lower()
+    def __init__(self, dlg, title=""):
+        super().__init__(dlg)
+        self._dlg = dlg
+        self._drag = None
+        self.setObjectName("GlassTitle")
+        self.setFixedHeight(34)
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 0, 6, 0)
+        lay.setSpacing(6)
+        lb = QLabel(title or dlg.windowTitle() or "星语 · Starry")
+        lb.setStyleSheet("font-size:13px;font-weight:600;background:transparent;")
+        lay.addWidget(lb)
+        lay.addStretch(1)
+        btn = QPushButton("✕")
+        btn.setObjectName("FlatButton")
+        btn.setFixedSize(24, 24)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip("关闭（Esc）")
+        btn.clicked.connect(dlg.reject)
+        lay.addWidget(btn)
 
     def mousePressEvent(self, e):
-        e.ignore()
+        if e.button() == Qt.LeftButton:
+            self._drag = e.globalPos() - self._dlg.frameGeometry().topLeft()
+        super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
-        e.ignore()
+        if (e.buttons() & Qt.LeftButton) and self._drag is not None:
+            self._dlg.move(e.globalPos() - self._drag)
+            return
+        super().mouseMoveEvent(e)
 
-    def _grab(self):
-        """背景层是子控件：``frameGeometry()`` 是相对父窗口的坐标，
-        直接抓屏会抓到屏幕左上角错误区域。这里强制使用无屏依赖的
-        faux 渐变玻璃（与主窗口 offscreen 降级路径一致），视觉统一且零风险。
-        """
-        self._bg = None
-        self._faux = True
-        self.update()
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+        super().mouseReleaseEvent(e)
 
 
 class _GlassInstaller(QObject):
-    """全局 Show/Resize 事件过滤：任何 QDialog 首次显示即套玻璃。"""
+    """全局 Show 事件过滤：QDialog 首次显示时套圆角玻璃（幂等）。"""
 
     def __init__(self, theme_getter=None, parent=None):
         super().__init__(parent)
         self._theme_getter = theme_getter
-        self._watched = set()
 
     def eventFilter(self, obj, e):
-        try:
-            if not isinstance(obj, QDialog):
-                return False
-            if e.type() == QEvent.Show:
-                t = self._theme_getter() if self._theme_getter else None
-                if apply_glass(obj, t):
-                    self._watched.add(id(obj))
-            elif e.type() == QEvent.Resize and id(obj) in self._watched:
-                _fit_backdrop(obj)
-        except Exception:                   # noqa: BLE001 - 绝不影响窗口显示
-            pass
+        if e.type() == QEvent.Show and isinstance(obj, QDialog):
+            try:
+                apply_glass(obj, self._theme_getter() if self._theme_getter else None)
+            except Exception:                   # noqa: BLE001 - 绝不影响窗口显示
+                pass
         return False
 
 
-def _fit_backdrop(dlg):
-    bd = dlg.findChild(_Backdrop, "GlassBackdrop")
-    if bd is not None:
-        bd.setGeometry(0, 0, dlg.width(), dlg.height())
-        bd.lower()
-
-
 def apply_glass(dlg, theme=None):
-    """给对话框加圆角毛玻璃背景；**不改动任何原有布局/控件**。返回是否应用。"""
+    """把对话框内容整体包进 FrostGlass 圆角底板；幂等。
+
+    关键（v14.0）：FrostGlass **自带 QVBoxLayout**，必须直接复用
+    ``glass.layout()``，绝不能再 setLayout()；也不能把条目摘出来却不放进
+    任何布局（v13.8 白屏根因）。这里逐项把原布局条目搬进 glass 自带布局，
+    原 dlg 布局仍保留、只承载 glass 一个控件，所有权清晰。
+    """
     if not isinstance(dlg, QDialog) or isinstance(dlg, _SKIP_TYPES):
         return False
     if getattr(dlg, _GLASS_FLAG, False):
         return False
     setattr(dlg, _GLASS_FLAG, True)
     if dlg.findChild(FrostGlass) is not None:
-        return True                      # 关于/EULA/网关已自带玻璃
+        return True                          # 关于 / EULA 已自带
 
-    bd = _Backdrop(dlg)
-    bd.setGeometry(0, 0, dlg.width(), dlg.height())
-    bd.lower()
+    old = dlg.layout()
+    if old is None:
+        return False
+    items = []
+    while old.count():
+        it = old.takeAt(0)
+        if it is not None:
+            items.append(it)
+    marg = old.contentsMargins()
+    spacing = old.spacing()
+
+    # 无边框 + 透明：圆角玻璃是窗口本体（AboutDialog 已验证此模式）
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowMinMaxButtonsHint
+                       | Qt.FramelessWindowHint | Qt.Dialog)
+    dlg.setAttribute(Qt.WA_TranslucentBackground, True)
+
+    outer_m = 12
+    old.setContentsMargins(outer_m, outer_m, outer_m, outer_m)
+    old.setSpacing(0)
+
+    glass = FrostGlass(dlg, radius=_RADIUS)
+    glass.setObjectName("FrostHost")
+    gl = glass.layout()                      # 复用自带布局，绝不 setLayout
+    gl.setContentsMargins(marg)
+    gl.setSpacing(spacing)
+    title = _GlassTitle(dlg)
+    gl.addWidget(title)                      # 自定义标题栏（拖动/关闭）
+    for it in items:
+        gl.addItem(it)
+    old.addWidget(glass)
+
+    eff = QGraphicsDropShadowEffect(glass)
+    eff.setBlurRadius(24)
+    eff.setColor(QColor(0, 0, 0, 110))
+    eff.setOffset(0, 4)
+    glass.setGraphicsEffect(eff)
     if theme is not None:
         try:
-            bd.apply_theme(theme)
+            glass.apply_theme(theme)
         except Exception:                   # noqa: BLE001
             pass
-    bd.show()
     return True
 
 

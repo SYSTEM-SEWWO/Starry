@@ -12,7 +12,9 @@
 本模块通过配置项 engine_urls 让用户自行填写来源，绝不编造下载 URL。
 """
 import os
+import re
 import shutil
+import sys
 import threading
 import time
 import zipfile
@@ -55,8 +57,62 @@ ENGINES = {
     },
 }
 
-_LLAMA_URL = ("https://github.com/ggml-org/llama.cpp/releases/latest/"
-              "download/llama-b6657-bin-win-cuda12.4-x64.zip")
+_LLAMA_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=12"
+
+
+def llama_latest_url(backend="CPU", cfg=None, timeout=15):
+    """从 GitHub 官方 API 读取 llama.cpp 最新 Release 的真实资产直链。
+
+    绝不硬编码某个 build 编号（会失效且属于臆造）。网络失败时返回空串，
+    UI 会提示手动导入 ZIP，而不是给出假链接。
+    """
+    if requests is None:
+        return ""
+    custom = _cfg(cfg, "engine_urls", {}) or {}
+    url = custom.get("llm_%s" % backend) or custom.get("llm")
+    if url:
+        return url
+    key = str(backend).lower()
+    win = sys.platform.startswith("win")
+    mac = sys.platform == "darwin"
+    try:
+        r = requests.get(_LLAMA_API, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        releases = data if isinstance(data, list) else [data]
+        for rel in releases:                 # 最新的 release 可能只有源码资产
+            candidates = []
+            for a in (rel.get("assets") or []):
+                name = str(a.get("name") or "").lower()
+                if not name.endswith(".zip"):
+                    continue
+                if mac:
+                    platform_ok = "mac" in name or "arm64" in name
+                elif win:
+                    platform_ok = "win" in name and "arm" not in name
+                else:
+                    platform_ok = "ubuntu" in name or "linux" in name
+                if not platform_ok:
+                    continue
+                if "cuda" in key:
+                    score = 3 if "cuda" in name else -1
+                elif "vulkan" in key:
+                    score = 3 if "vulkan" in name else -1
+                elif "intel" in key:
+                    score = 3 if ("intel" in name or "synclas" in name) else -1
+                else:
+                    score = 3 if "cpu" in name else 0
+                if score >= 0:
+                    # 优先主程序包 llama-bXXXX-*.zip，而不是 cudart 依赖包
+                    is_main = 0 if re.search(r"llama-b\d+", name) else 1
+                    candidates.append((score, is_main, str(a.get("name") or ""),
+                                       a.get("browser_download_url", "")))
+            if candidates:
+                candidates.sort(key=lambda x: (-x[0], x[1], x[2]))
+                return candidates[0][3]
+    except Exception:
+        pass
+    return ""
 
 
 def engines_dir():
@@ -85,7 +141,11 @@ def engine_url(kind, backend="CPU", cfg=None):
     if url:
         return url, "用户配置"
     if kind == "llm":
-        return _LLAMA_URL, "llama.cpp 官方 Release"
+        url = llama_latest_url(backend, cfg)
+        if url:
+            return url, "llama.cpp 官方最新 Release（GitHub API 实时查询）"
+        return "", ("llama.cpp 官方直链查询失败（离线或 API 限流）；"
+                    "请检查网络、在设置中填写来源，或使用「导入本地 ZIP」离线安装")
     return "", ("未配置：该引擎非公开直链，请在设置中填写来源，"
                 "或使用「导入本地 ZIP」离线安装")
 

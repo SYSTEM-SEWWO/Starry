@@ -129,7 +129,17 @@ def render_command(template, task, out_dir):
         "out": out_dir, "spec": task.get("spec", ""),
         "version": task.get("version", ""),
     }
-    safe = {k: shlex.quote(str(v)) for k, v in ctx.items()}
+    # Windows 下 shell=True 走 cmd.exe，shlex.quote 的单引号会被当成字面量；
+    # 必须用双引号。POSIX 下继续用 shlex.quote。
+    if os.name == "nt":
+        def quote(v):
+            s = str(v)
+            if not s or any(ch in s for ch in " \t\"&|^<>%"):
+                return '"%s"' % s.replace('"', '\\"')
+            return s
+    else:
+        quote = shlex.quote
+    safe = {k: quote(v) for k, v in ctx.items()}
     try:
         return template.format(**safe)
     except (KeyError, IndexError) as e:

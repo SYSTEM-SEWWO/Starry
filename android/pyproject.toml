@@ -15,7 +15,7 @@
 
 [project]
 name = "starryandroid"
-version = "14.0.0"
+version = "15.0.0"
 description = "星语 Starry 安卓版 —— 跨平台 AI 助手（深度思考 / 长期记忆 / 智能体）"
 readme = "README.md"
 requires-python = ">= 3.11"
@@ -28,7 +28,7 @@ dev = ["briefcase==0.4.7", "toga-core==0.5.7"]
 [tool.briefcase]
 project_name = "StarryAssistant"
 bundle = "com.starry"
-version = "14.0.0"
+version = "15.0.0"
 url = "https://github.com/yourname/ai-assistant"
 author = "星语 Starry"
 email = "starry@example.com"

@@ -369,6 +369,7 @@ class AssistantApp(QObject):
         menu.addAction("🛠 开发者调试面板", self.open_devtools)
         menu.addAction("资料库", self.open_library)
         menu.addAction("模型库（魔塔 GGUF）", self.open_models)
+        menu.addAction("🌐 本地 AI 工作室", self.open_local_studio)
         menu.addAction("自动化任务", self.open_automation)
         menu.addAction("专家会诊", self.open_panel)
         menu.addAction("Agent 邮件", self.open_mail)
@@ -619,6 +620,8 @@ class AssistantApp(QObject):
             ("reset_layout", "↺", "恢复推荐布局",
              "重置窗口尺寸与位置，按当前密度放大（v13.6.5）", "外观"),
             ("models", "📦", "模型库（魔塔 GGUF）", "搜索并下载本地模型", "模型"),
+            ("local_studio", "🌐", "本地 AI 工作室",
+             "硬件体检 / 引擎 / GGUF / 画图 / 视频 / Agent / 作品库", "模型"),
             ("switch_model", "🔀", "切换到下一个模型", "在模型列表中循环切换", "模型"),
             ("model_route", "🧠", "智能选模型",
              "按本轮请求特征推荐模型并确认切换（v13.4）", "模型"),
@@ -739,6 +742,8 @@ class AssistantApp(QObject):
             self._cycle_density()
         elif cid == "reset_layout":
             self.window.reset_layout()
+        elif cid == "local_studio":
+            self.open_local_studio()
         elif cid == "models":
             self.open_models()
         elif cid == "switch_model":
@@ -1805,6 +1810,27 @@ class AssistantApp(QObject):
         dlg.changed.connect(
             lambda: self.window.set_memory_count(self.memory.count()))
         self._show_child(dlg)
+
+    def open_local_studio(self):
+        """🌐 本地 AI 工作室（LocModel 公开功能规格复刻）。
+
+        硬件体检 / 引擎安装 / GGUF 模型 / 画图 / 视频 / Agent / 作品库 / 画布，
+        全部本地运行；沿用非模态子窗口机制，主窗口始终可操作。
+        """
+        try:
+            from ui.local_studio import LocalStudioDialog
+            dlg = getattr(self, "_local_studio", None)
+            if dlg is None:
+                dlg = LocalStudioDialog(self.cfg, self)
+                self._local_studio = dlg
+                self._show_child(dlg)
+            elif not dlg.isVisible():
+                self._show_child(dlg)
+            else:
+                dlg.raise_()
+                dlg.activateWindow()
+        except Exception as e:                     # noqa: BLE001
+            self.window.show_hint("打开本地 AI 工作室失败：%s" % e)
 
     def open_models(self):
         """打开模型库（阿里魔塔 GGUF 下载 / llama.cpp 本地服务）"""

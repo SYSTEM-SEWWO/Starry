@@ -16,7 +16,7 @@ import tempfile
 
 APP_ID = "ai-desktop-assistant"
 APP_NAME = "星语 · Starry"
-APP_VERSION = "14.0.0"
+APP_VERSION = "15.0.0"
 
 # ---------------------------------------------------------------------------
 # 内置提供商预设（全部为 OpenAI 兼容 /chat/completions 接口，Ollama 亦兼容）
@@ -305,6 +305,16 @@ DEFAULT_CONFIG = {
     "ui_density": "宽松",
     "layout_version": 2,
     "ball_moods": True,           # v13.9：悬浮球不定时小表情
+    # v15.0：本地 AI 工作室（LocModel 公开规格复刻）
+    "local_studio": {
+        "context": 8192,           # 8K / 16K / 32K / 64K
+        "think_mode": False,
+        "lan_access": False,
+        # 非公开引擎需自行填写来源；llama.cpp 有官方直链无需填写
+        "engine_urls": {},
+        # 本地生成命令模板，占位符见 core/genstudio.render_command
+        "generators": {},
+    },
 }
 
 

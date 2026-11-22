@@ -114,13 +114,14 @@ def delete_gguf(path):
         return False
 
 
-def server_command(model_path, port=DEFAULT_PORT, ctx=DEFAULT_CTX):
-    """构造 llama-server 启动命令"""
+def server_command(model_path, port=DEFAULT_PORT, ctx=DEFAULT_CTX,
+                   host="127.0.0.1"):
+    """构造 llama-server 启动命令（host 支持局域网 0.0.0.0）"""
     exe = find_llama_server()
     if not exe:
         return None
     return [exe, "-m", model_path, "--port", str(port),
-            "-c", str(ctx), "--host", "127.0.0.1"]
+            "-c", str(ctx), "--host", host]
 
 
 class ServerHandle:
@@ -152,11 +153,12 @@ def is_running(port=DEFAULT_PORT, timeout=3):
         return False
 
 
-def start_server(model_path, port=DEFAULT_PORT, ctx=DEFAULT_CTX):
+def start_server(model_path, port=DEFAULT_PORT, ctx=DEFAULT_CTX,
+                 host="127.0.0.1"):
     """后台启动 llama-server 并等待就绪（最多 30 秒）"""
     if is_running(port):
         raise RuntimeError("端口 %d 已被占用（可能服务已在运行）" % port)
-    cmd = server_command(model_path, port, ctx)
+    cmd = server_command(model_path, port, ctx, host)
     if not cmd:
         raise RuntimeError("未找到 llama-server，请先安装 llama.cpp")
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,

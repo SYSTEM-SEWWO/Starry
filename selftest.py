@@ -5268,6 +5268,57 @@ def test_v140_fixes():
           ("blink","smile","surprise","sleepy","love","tilt","wave","yawn")))
 
 
+def test_v150_fixes():
+    """V15.0：本地 AI 工作室（LocModel 公开功能规格复刻）。"""
+    section("V15.0 · 本地 AI 工作室")
+    import io as _io, os as _os, tempfile as _tf, shutil as _sh
+    from core import (hwprobe, tiering, ggufmgr, enginemgr, genstudio,
+                      agentfs, runconfig, artworks)
+    hw = hwprobe.probe()
+    check("硬件探测结构完整", all(k in hw for k in (
+        "platform", "gpus", "backends", "cpu", "memory", "disk")))
+    recs = hwprobe.recommend(hw, ggufmgr.builtin_catalog())
+    check("模型推荐含官网示例且标注估算", len(recs) == 7 and all(
+        m.get("estimate") for m in recs)
+        and any("Muse Glimmer" in m["name"] for m in recs))
+    hz = {"vram_gb": 0.0, "memory": {"total_gb": 16.0, "available_gb": 12.0},
+          "disk": {"free_gb": 100.0}, "backends": ["CPU"]}
+    pp = tiering.plan(17.0, hz, moe=True)
+    check("显存分层含 MoE 与 4GB 预留", len(pp["parts"]) == 4
+          and pp["ram"]["reserve_gb"] == 4.0)
+    check("五种画幅四类引擎", len(genstudio.ASPECTS) == 5
+          and set(enginemgr.ENGINES) == {"llm", "image", "video", "lipsync"})
+    check("四条上下文档位", runconfig.CONTEXT_OPTIONS == [8192, 16384, 32768, 65536])
+    t = genstudio.new_image_task("猫", seed=42)
+    r = genstudio.run_task(t, cfg=type("C", (), {"data": {}})())
+    check("未配置引擎不伪造生成", not r["ok"] and "未配置" in r["error"])
+    root = _tf.mkdtemp(prefix="v150_st_")
+    try:
+        root = agentfs.set_root(root)
+        try:
+            agentfs.safe_resolve(root, "../escape")
+            bad = False
+        except agentfs.SandboxError:
+            bad = True
+        check("Agent 沙箱拒绝越界", bad)
+        check("Agent 删除需确认",
+              agentfs.delete(root, "x.txt").get("need_confirm"))
+    finally:
+        _sh.rmtree(root, ignore_errors=True)
+    ui = _io.open("ui/local_studio.py", encoding="utf-8").read()
+    ast_ = _io.open("app/assistant.py", encoding="utf-8").read()
+    check("工作室八页", ui.count("self._page_") >= 8)
+    check("不用 QThread/QMessageBox", "QThread(" not in ui
+          and "QMessageBox(" not in ui)
+    check("助手入口与配置", "def open_local_studio" in ast_
+          and '"local_studio": {' in _io.open("core/config.py", encoding="utf-8").read())
+    mods = ("hwprobe", "tiering", "ggufmgr", "enginemgr", "genstudio",
+            "artworks", "agentfs", "runconfig")
+    check("三端同源", all(_io.open("core/%s.py" % m, "rb").read() ==
+                        _io.open("android/core/%s.py" % m, "rb").read()
+                        for m in mods))
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AI 桌面助手")
@@ -5317,6 +5368,7 @@ def main():
     test_v138_fixes()
     test_v139_fixes()
     test_v140_fixes()
+    test_v150_fixes()
     test_v3_screenshots(app)
     print("\n==================================")
     print("结果：%d 通过，%d 失败" % (len(PASS), len(FAIL)))
